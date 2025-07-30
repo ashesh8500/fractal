@@ -249,7 +249,6 @@ impl eframe::App for TemplateApp {
         
         // Render portfolio UI panels
         self.render_portfolio_ui(ctx);
-        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
@@ -264,7 +263,7 @@ impl eframe::App for TemplateApp {
                         ConnectionStatus::Disconnected => (egui::Color32::RED, "Backend: Disconnected"),
                         ConnectionStatus::Connecting => (egui::Color32::YELLOW, "Backend: Connecting..."),
                         ConnectionStatus::Connected => (egui::Color32::GREEN, "Backend: Connected"),
-                        ConnectionStatus::Error(e) => (egui::Color32::RED, &format!("Backend Error: {}", e)),
+                        ConnectionStatus::Error(e) => (egui::Color32::RED, e.as_str()),
                     };
                     
                     ui.colored_label(color, "●");
