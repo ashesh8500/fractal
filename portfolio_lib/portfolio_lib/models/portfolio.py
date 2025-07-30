@@ -278,9 +278,31 @@ class Portfolio:
         """
         logger.info(f"Running strategy '{strategy_name}' on portfolio '{self.name}'")
         
-        # TODO: Implement strategy execution engine
-        # This will integrate with the strategy service in Phase 5
-        pass
+        # Import here to avoid circular imports
+        from ..services.strategy import StrategyService, MomentumStrategy
+        
+        # Create strategy service and register available strategies
+        strategy_service = StrategyService()
+        
+        # Register built-in strategies
+        if strategy_name.lower() == "momentum":
+            strategy_service.register_strategy("momentum", MomentumStrategy())
+        else:
+            raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: ['momentum']")
+        
+        # Get required data
+        price_history = self._get_price_history()
+        current_prices = self._get_current_prices()
+        current_weights = self.current_weights
+        
+        # Execute strategy
+        return strategy_service.execute_strategy(
+            strategy_name.lower(),
+            current_weights,
+            price_history,
+            current_prices,
+            config
+        )
     
     def run_backtest(self, strategy_name: str, config: BacktestConfig) -> BacktestResult:
         """
@@ -295,9 +317,36 @@ class Portfolio:
         """
         logger.info(f"Running backtest '{strategy_name}' on portfolio '{self.name}'")
         
-        # TODO: Implement backtesting engine
-        # This will integrate with the backtesting service in Phase 5
-        pass
+        # Import here to avoid circular imports
+        from ..services.strategy import MomentumStrategy
+        from ..services.backtesting import BacktestingService
+        from .strategy import StrategyConfig
+        
+        # Create strategy instance
+        if strategy_name.lower() == "momentum":
+            strategy = MomentumStrategy()
+        else:
+            raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: ['momentum']")
+        
+        # Create strategy config from backtest config
+        strategy_config = StrategyConfig(
+            name=strategy_name.lower(),
+            parameters={},  # Use default parameters
+            rebalance_frequency="monthly",  # Default rebalancing
+            risk_tolerance=0.1,
+            max_position_size=0.3
+        )
+        
+        # Create backtesting service
+        backtesting_service = BacktestingService(self.data_service)
+        
+        # Run backtest
+        return backtesting_service.run_backtest(
+            strategy,
+            strategy_config,
+            config,
+            self.holdings
+        )
     
     def get_position_values(self) -> Dict[str, float]:
         """
