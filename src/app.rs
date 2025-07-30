@@ -1,6 +1,7 @@
 use crate::api::ApiClient;
 use crate::components::ComponentManager;
 use crate::state::AppState;
+use std::sync::{Arc, Mutex};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -32,6 +33,10 @@ pub struct TemplateApp {
     
     #[serde(skip)]
     test_message: String,
+    
+    // Shared state for async operations
+    #[serde(skip)]
+    async_state: Arc<Mutex<AsyncState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +45,12 @@ enum ConnectionStatus {
     Connecting,
     Connected,
     Error(String),
+}
+
+#[derive(Debug, Default)]
+struct AsyncState {
+    connection_result: Option<Result<(), String>>,
+    portfolio_result: Option<Result<String, String>>,
 }
 
 impl Default for TemplateApp {
@@ -57,6 +68,7 @@ impl Default for TemplateApp {
             selected_portfolio: None,
             connection_status: ConnectionStatus::Disconnected,
             test_message: "Not tested yet".to_string(),
+            async_state: Arc::new(Mutex::new(AsyncState::default())),
         }
     }
 }
@@ -79,6 +91,7 @@ impl TemplateApp {
         app.api_client = ApiClient::new("http://localhost:8000/api/v1");
         app.component_manager = ComponentManager::new();
         app.connection_status = ConnectionStatus::Disconnected;
+        app.async_state = Arc::new(Mutex::new(AsyncState::default()));
         
         app
     }
@@ -94,20 +107,30 @@ impl TemplateApp {
         
         let api_client = self.api_client.clone();
         let ctx = ctx.clone();
+        let async_state = self.async_state.clone();
         
-        // Spawn async task to test connection
-        tokio::spawn(async move {
-            // For now, just test the health endpoint
-            match api_client.test_health().await {
-                Ok(_) => {
-                    // Connection successful - request repaint
-                    ctx.request_repaint();
+        // Use a thread to handle the async operation
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let result = match api_client.test_health().await {
+                    Ok(_) => {
+                        log::info!("Backend connection successful");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        log::error!("Backend connection failed: {}", e);
+                        Err(e.to_string())
+                    }
+                };
+                
+                // Update shared state
+                if let Ok(mut state) = async_state.lock() {
+                    state.connection_result = Some(result);
                 }
-                Err(e) => {
-                    log::error!("Backend connection failed: {}", e);
-                    ctx.request_repaint();
-                }
-            }
+                
+                ctx.request_repaint();
+            });
         });
     }
     
@@ -115,23 +138,34 @@ impl TemplateApp {
     fn create_test_portfolio(&mut self, ctx: &egui::Context) {
         let api_client = self.api_client.clone();
         let ctx = ctx.clone();
+        let async_state = self.async_state.clone();
         
-        tokio::spawn(async move {
-            let mut holdings = std::collections::HashMap::new();
-            holdings.insert("AAPL".to_string(), 10.0);
-            holdings.insert("MSFT".to_string(), 5.0);
-            holdings.insert("GOOGL".to_string(), 3.0);
-            
-            match api_client.create_portfolio("Test Portfolio", holdings).await {
-                Ok(portfolio) => {
-                    log::info!("Created test portfolio: {}", portfolio.name);
-                    ctx.request_repaint();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let mut holdings = std::collections::HashMap::new();
+                holdings.insert("AAPL".to_string(), 10.0);
+                holdings.insert("MSFT".to_string(), 5.0);
+                holdings.insert("GOOGL".to_string(), 3.0);
+                
+                let result = match api_client.create_portfolio("Test Portfolio", holdings).await {
+                    Ok(portfolio) => {
+                        log::info!("Created test portfolio: {}", portfolio.name);
+                        Ok(portfolio.name)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create test portfolio: {}", e);
+                        Err(e.to_string())
+                    }
+                };
+                
+                // Update shared state
+                if let Ok(mut state) = async_state.lock() {
+                    state.portfolio_result = Some(result);
                 }
-                Err(e) => {
-                    log::error!("Failed to create test portfolio: {}", e);
-                    ctx.request_repaint();
-                }
-            }
+                
+                ctx.request_repaint();
+            });
         });
     }
     
@@ -187,6 +221,37 @@ impl TemplateApp {
             });
     }
     
+    /// Check for async operation results and update UI state
+    fn check_async_results(&mut self) {
+        if let Ok(mut state) = self.async_state.lock() {
+            // Check connection result
+            if let Some(result) = state.connection_result.take() {
+                match result {
+                    Ok(_) => {
+                        self.connection_status = ConnectionStatus::Connected;
+                        self.test_message = "Connection successful!".to_string();
+                    }
+                    Err(e) => {
+                        self.connection_status = ConnectionStatus::Error(e.clone());
+                        self.test_message = format!("Connection failed: {}", e);
+                    }
+                }
+            }
+            
+            // Check portfolio creation result
+            if let Some(result) = state.portfolio_result.take() {
+                match result {
+                    Ok(name) => {
+                        self.test_message = format!("Portfolio '{}' created successfully!", name);
+                    }
+                    Err(e) => {
+                        self.test_message = format!("Portfolio creation failed: {}", e);
+                    }
+                }
+            }
+        }
+    }
+    
     /// Render portfolio components in the central panel
     fn render_portfolio_components(&mut self, ui: &mut egui::Ui) {
         if let Some(portfolio_name) = &self.selected_portfolio {
@@ -210,6 +275,9 @@ impl eframe::App for TemplateApp {
 
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check for async operation results
+        self.check_async_results();
+        
         // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
