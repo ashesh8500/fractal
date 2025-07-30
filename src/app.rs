@@ -1,4 +1,3 @@
-use crate::portfolio::Portfolio;
 use crate::api::ApiClient;
 use crate::components::ComponentManager;
 use crate::state::AppState;
@@ -70,7 +69,7 @@ impl TemplateApp {
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
-        let mut app = if let Some(storage) = cc.storage {
+        let mut app: Self = if let Some(storage) = cc.storage {
             eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
         } else {
             Default::default()

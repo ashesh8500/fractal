@@ -5,7 +5,11 @@ Uses functional programming and Result monad for clean error handling.
 
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
+
+# Add portfolio_lib to Python path
+portfolio_lib_path = os.path.join(os.path.dirname(__file__), '../../portfolio_lib')
+if portfolio_lib_path not in sys.path:
+    sys.path.insert(0, portfolio_lib_path)
 
 from typing import Dict, Any
 from datetime import datetime

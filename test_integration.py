@@ -94,13 +94,19 @@ def start_backend_server():
     print("🚀 Starting backend server...")
     
     # Start the server in the background
+    env = os.environ.copy()
+    env['PYTHONPATH'] = os.pathsep.join([
+        os.path.join(os.getcwd(), 'portfolio_lib'),
+        env.get('PYTHONPATH', '')
+    ])
+    
     process = subprocess.Popen([
         sys.executable, "-m", "uvicorn", 
         "backend_server.app.main:app", 
         "--reload", 
         "--host", "0.0.0.0", 
         "--port", "8000"
-    ], cwd=os.getcwd())
+    ], cwd=os.getcwd(), env=env)
     
     # Give it time to start
     time.sleep(3)
