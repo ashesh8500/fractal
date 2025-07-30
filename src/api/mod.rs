@@ -5,6 +5,7 @@ use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub struct ApiClient {
     client: Client,
     base_url: String,
@@ -15,6 +16,18 @@ impl ApiClient {
         Self {
             client: Client::new(),
             base_url: base_url.to_string(),
+        }
+    }
+    
+    /// Test backend health
+    pub async fn test_health(&self) -> Result<(), ApiError> {
+        let url = format!("{}/health", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(ApiError::Backend(format!("Health check failed with status: {}", response.status())))
         }
     }
     

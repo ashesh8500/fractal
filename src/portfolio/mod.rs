@@ -71,7 +71,7 @@ impl Portfolio {
     /// Get position value for a symbol
     pub fn get_position_value(&self, symbol: &str) -> Option<f64> {
         self.holdings.get(symbol)
-            .and_then(|shares| {
+            .and_then(|_shares| {
                 self.current_weights.get(symbol)
                     .map(|weight| self.total_value * weight)
             })
