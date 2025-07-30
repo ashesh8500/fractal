@@ -6,7 +6,7 @@ use crate::state::Config;
 use crate::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent};
 
 pub struct ComponentManager {
-    components: Vec<Box<dyn PortfolioComponent>>,
+    pub components: Vec<Box<dyn PortfolioComponent>>,
 }
 
 impl ComponentManager {

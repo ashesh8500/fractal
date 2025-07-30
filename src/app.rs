@@ -3,6 +3,10 @@ use crate::components::ComponentManager;
 use crate::state::AppState;
 use std::sync::{Arc, Mutex};
 
+pub struct TemplateApp {
+    // ... existing fields
+}
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -15,7 +19,7 @@ pub struct TemplateApp {
 
     // Portfolio functionality (extending template):
     #[serde(skip)]
-    app_state: AppState,
+    pub app_state: AppState,
     
     #[serde(skip)]
     api_client: ApiClient,
@@ -48,9 +52,10 @@ enum ConnectionStatus {
 }
 
 #[derive(Debug, Default)]
-struct AsyncState {
-    connection_result: Option<Result<(), String>>,
-    portfolio_result: Option<Result<String, String>>,
+pub struct AsyncState {
+    pub connection_result: Option<Result<(), String>>,
+    pub portfolio_result: Option<Result<String, String>>,
+    pub portfolios_result: Option<Result<Vec<crate::portfolio::Portfolio>, String>>,
 }
 
 impl Default for TemplateApp {
@@ -134,7 +139,7 @@ impl TemplateApp {
         });
     }
     
-    /// Create a test portfolio
+    /// Create a test portfolio with unique name
     fn create_test_portfolio(&mut self, ctx: &egui::Context) {
         let api_client = self.api_client.clone();
         let ctx = ctx.clone();
@@ -148,7 +153,11 @@ impl TemplateApp {
                 holdings.insert("MSFT".to_string(), 5.0);
                 holdings.insert("GOOGL".to_string(), 3.0);
                 
-                let result = match api_client.create_portfolio("Test Portfolio", holdings).await {
+                // Create unique portfolio name with timestamp
+                let timestamp = chrono::Utc::now().format("%H%M%S");
+                let portfolio_name = format!("Test Portfolio {}", timestamp);
+                
+                let result = match api_client.create_portfolio(&portfolio_name, holdings).await {
                     Ok(portfolio) => {
                         log::info!("Created test portfolio: {}", portfolio.name);
                         Ok(portfolio.name)
@@ -162,6 +171,36 @@ impl TemplateApp {
                 // Update shared state
                 if let Ok(mut state) = async_state.lock() {
                     state.portfolio_result = Some(result);
+                }
+                
+                ctx.request_repaint();
+            });
+        });
+    }
+    
+    /// Load portfolios from backend
+    fn load_portfolios(&mut self, ctx: &egui::Context) {
+        let api_client = self.api_client.clone();
+        let ctx = ctx.clone();
+        let async_state = self.async_state.clone();
+        
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let result = match api_client.get_portfolios().await {
+                    Ok(portfolios) => {
+                        log::info!("Loaded {} portfolios", portfolios.len());
+                        Ok(portfolios)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load portfolios: {}", e);
+                        Err(e.to_string())
+                    }
+                };
+                
+                // Update shared state
+                if let Ok(mut state) = async_state.lock() {
+                    state.portfolios_result = Some(result);
                 }
                 
                 ctx.request_repaint();
@@ -242,10 +281,30 @@ impl TemplateApp {
             if let Some(result) = state.portfolio_result.take() {
                 match result {
                     Ok(name) => {
-                        self.test_message = format!("Portfolio '{}' created successfully!", name);
+                        self.test_message = format!("Portfolio '{}' created successfully! Loading portfolios...", name);
+                        // Auto-load portfolios after creation
+                        self.load_portfolios(&egui::Context::default());
                     }
                     Err(e) => {
                         self.test_message = format!("Portfolio creation failed: {}", e);
+                    }
+                }
+            }
+            
+            // Check portfolios loading result
+            if let Some(result) = state.portfolios_result.take() {
+                match result {
+                    Ok(portfolios) => {
+                        // Update app state with loaded portfolios
+                        let mut portfolio_map = std::collections::HashMap::new();
+                        for portfolio in portfolios {
+                            portfolio_map.insert(portfolio.name.clone(), portfolio);
+                        }
+                        self.app_state.portfolios = Some(portfolio_map);
+                        self.test_message = format!("Loaded {} portfolios successfully!", self.app_state.portfolios.as_ref().unwrap().len());
+                    }
+                    Err(e) => {
+                        self.test_message = format!("Failed to load portfolios: {}", e);
                     }
                 }
             }
@@ -305,7 +364,7 @@ impl eframe::App for TemplateApp {
                         self.test_backend_connection(ctx);
                     }
                     if ui.button("Load Portfolios").clicked() {
-                        // TODO: Load portfolios from API
+                        self.load_portfolios(ctx);
                     }
                 });
                 
