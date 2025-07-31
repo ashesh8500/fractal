@@ -3,7 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use egui_plot::{Bar, BarChart, Plot, Candle, Ohlcv};
+use egui_plot::{Bar, BarChart, Plot, PlotPoints, Line};
 
 pub struct CandlesComponent {
     is_open: bool,
@@ -95,19 +95,50 @@ impl PortfolioComponent for CandlesComponent {
                             0 
                         };
                         
-                        // Create candlestick visualization using egui_plot::Candle
-                        let candles: Vec<Candle> = prices[start_idx..].iter().enumerate().map(|(i, price)| {
-                            Candle::new(i as f64, price.open, price.high, price.low, price.close)
-                        }).collect();
+                        // Create candlestick visualization using multiple elements
+                        let mut high_low_bars = Vec::new();
+                        let mut body_bars = Vec::new();
                         
-                        let candlestick_chart = Ohlcv::new(candles)
-                            .name(format!("{} OHLC", symbol));
+                        for (i, price) in prices[start_idx..].iter().enumerate() {
+                            let x = i as f64;
+                            
+                            // High-Low line (thin bar)
+                            let hl_height = price.high - price.low;
+                            high_low_bars.push(
+                                Bar::new(x, hl_height)
+                                    .base(price.low)
+                                    .width(0.1)
+                                    .vertical()
+                                    .fill(egui::Color32::GRAY)
+                            );
+                            
+                            // Body (thick bar)
+                            let body_height = (price.close - price.open).abs();
+                            let body_base = price.open.min(price.close);
+                            let body_color = if price.close >= price.open {
+                                egui::Color32::from_rgb(0, 150, 0) // Green for bullish
+                            } else {
+                                egui::Color32::from_rgb(150, 0, 0) // Red for bearish
+                            };
+                            
+                            body_bars.push(
+                                Bar::new(x, body_height)
+                                    .base(body_base)
+                                    .width(0.6)
+                                    .vertical()
+                                    .fill(body_color)
+                            );
+                        }
+                        
+                        let hl_chart = BarChart::new(high_low_bars).name("High-Low");
+                        let body_chart = BarChart::new(body_bars).name("Body");
                         
                         Plot::new("candlestick_chart")
                             .view_aspect(2.0)
                             .legend(egui_plot::Legend::default())
                             .show(ui, |plot_ui| {
-                                plot_ui.ohlcv(candlestick_chart);
+                                plot_ui.bar_chart(hl_chart);
+                                plot_ui.bar_chart(body_chart);
                             });
                         
                         // Render volume bars below price chart
