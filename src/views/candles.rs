@@ -37,7 +37,7 @@ impl PortfolioComponent for CandlesComponent {
             ui.label("Symbol:");
             let symbols = portfolio.symbols();
             if !symbols.is_empty() {
-                egui::ComboBox::from_label("")
+                egui::ComboBox::from_id_source("candles_symbol_selector")
                     .selected_text(
                         self.selected_symbol
                             .as_ref()
@@ -53,7 +53,7 @@ impl PortfolioComponent for CandlesComponent {
             ui.separator();
             
             ui.label("Timeframe:");
-            egui::ComboBox::from_label("")
+            egui::ComboBox::from_id_source("candles_timeframe_selector")
                 .selected_text(format!("{:?}", self.timeframe))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.timeframe, Timeframe::Daily, "Daily");
