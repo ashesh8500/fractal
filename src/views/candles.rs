@@ -3,7 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use egui_plot::{Bar, BarChart, Plot, PlotPoints, Line};
+use egui_plot::{Bar, BarChart, Plot};
 
 pub struct CandlesComponent {
     is_open: bool,
@@ -105,8 +105,7 @@ impl PortfolioComponent for CandlesComponent {
                             // High-Low line (thin bar)
                             let hl_height = price.high - price.low;
                             high_low_bars.push(
-                                Bar::new(x, hl_height)
-                                    .base(price.low)
+                                Bar::new(x, price.low + hl_height/2.0)
                                     .width(0.1)
                                     .vertical()
                                     .fill(egui::Color32::GRAY)
@@ -122,8 +121,7 @@ impl PortfolioComponent for CandlesComponent {
                             };
                             
                             body_bars.push(
-                                Bar::new(x, body_height)
-                                    .base(body_base)
+                                Bar::new(x, body_base + body_height/2.0)
                                     .width(0.6)
                                     .vertical()
                                     .fill(body_color)
@@ -149,7 +147,8 @@ impl PortfolioComponent for CandlesComponent {
                             .take(50)
                             .enumerate()
                             .map(|(i, price)| {
-                                Bar::new(i as f64, price.volume as f64)
+                                Bar::new(i as f64, price.volume as f64/2.0)
+                                    .width(0.8)
                                     .vertical()
                                     .name(format!("Volume {}", i))
                                     .fill(egui::Color32::BLUE)
@@ -157,7 +156,6 @@ impl PortfolioComponent for CandlesComponent {
                             .collect();
                         
                         let volume_chart = BarChart::new(volumes)
-                            .width(0.8)
                             .name("Volume");
                         
                         Plot::new("volume_chart")
