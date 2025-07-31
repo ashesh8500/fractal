@@ -122,10 +122,10 @@ class PortfolioService:
             # Convert portfolio risk metrics to schema format
             risk_dict = risk_metrics.to_dict() if hasattr(risk_metrics, 'to_dict') else {}
             risk_metrics = RiskMetrics(
-                volatility=risk_dict.get('volatility', 0.0),
-                sharpe_ratio=risk_dict.get('sharpe_ratio', 0.0),
-                max_drawdown=risk_dict.get('max_drawdown', 0.0),
-                var_95=risk_dict.get('var_95', 0.0)
+                volatility=risk_dict.get('volatility') or 0.0,
+                sharpe_ratio=risk_dict.get('sharpe_ratio') or 0.0,
+                max_drawdown=risk_dict.get('max_drawdown') or 0.0,
+                var_95=risk_dict.get('var_95') or 0.0
             )
         
         performance_metrics = getattr(portfolio, 'performance_metrics', None)
@@ -135,10 +135,10 @@ class PortfolioService:
             # Convert portfolio performance metrics to schema format
             perf_dict = performance_metrics.to_dict() if hasattr(performance_metrics, 'to_dict') else {}
             performance_metrics = PerformanceMetrics(
-                total_return=perf_dict.get('total_return', 0.0),
-                annualized_return=perf_dict.get('annualized_return', 0.0),
-                alpha=perf_dict.get('alpha', 0.0),
-                beta=perf_dict.get('beta', 0.0)
+                total_return=perf_dict.get('total_return') or 0.0,
+                annualized_return=perf_dict.get('annualized_return') or 0.0,
+                alpha=perf_dict.get('alpha') or 0.0,
+                beta=perf_dict.get('beta') or 0.0
             )
         
         return PortfolioResponse(
