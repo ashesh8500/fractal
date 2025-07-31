@@ -3,6 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
+use egui_plot::{Bar, BarChart, Plot};
 
 pub struct CandlesComponent {
     is_open: bool,
@@ -85,15 +86,64 @@ impl PortfolioComponent for CandlesComponent {
                     
                     ui.separator();
                     
-                    // Placeholder for candlestick chart
-                    ui.label("🕯️ Candlestick chart visualization will be implemented here");
-                    ui.label("Features to include:");
-                    ui.label("• OHLC candlestick rendering");
-                    ui.label("• Volume bars below price");
-                    ui.label("• Support/resistance levels");
-                    ui.label("• Pattern recognition highlights");
-                    ui.label("• Bollinger Bands overlay");
-                    ui.label("• Moving averages (20, 50, 200 day)");
+                    // Render candlestick chart
+                    if !prices.is_empty() {
+                        // Create a simplified candlestick visualization using bar charts
+                        let candles: Vec<Bar> = prices.iter()
+                            .take(50) // Limit to last 50 data points for clarity
+                            .enumerate()
+                            .map(|(i, price)| {
+                                // Create a bar representing the price range (high to low)
+                                let height = price.high - price.low;
+                                let base = price.low;
+                                
+                                Bar::new(i as f64, height)
+                                    .base(base)
+                                    .vertical()
+                                    .name(format!("Day {}", i))
+                                    .fill(if price.close >= price.open {
+                                        egui::Color32::GREEN
+                                    } else {
+                                        egui::Color32::RED
+                                    })
+                            })
+                            .collect();
+                        
+                        let candle_chart = BarChart::new(candles)
+                            .width(0.8)
+                            .name("Candles");
+                        
+                        Plot::new("candlestick_chart")
+                            .view_aspect(2.0)
+                            .show(ui, |plot_ui| {
+                                plot_ui.bar_chart(candle_chart);
+                            });
+                        
+                        // Render volume bars below price chart
+                        ui.separator();
+                        ui.heading("Volume");
+                        
+                        let volumes: Vec<Bar> = prices.iter()
+                            .take(50)
+                            .enumerate()
+                            .map(|(i, price)| {
+                                Bar::new(i as f64, price.volume as f64)
+                                    .vertical()
+                                    .name(format!("Volume {}", i))
+                                    .fill(egui::Color32::BLUE)
+                            })
+                            .collect();
+                        
+                        let volume_chart = BarChart::new(volumes)
+                            .width(0.8)
+                            .name("Volume");
+                        
+                        Plot::new("volume_chart")
+                            .view_aspect(2.0)
+                            .show(ui, |plot_ui| {
+                                plot_ui.bar_chart(volume_chart);
+                            });
+                    }
                     
                     // Show data summary
                     ui.separator();

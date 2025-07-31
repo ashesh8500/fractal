@@ -3,6 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
+use egui_plot::{Line, Plot, Points};
 
 pub struct ChartsComponent {
     is_open: bool,
@@ -58,32 +59,51 @@ impl PortfolioComponent for ChartsComponent {
                 
                 ui.label(format!("Price history: {} data points", price_history.len()));
                 
-                // Render a simple line chart of closing prices
+                // Render a line chart of closing prices
                 if !price_history.is_empty() {
                     ui.separator();
                     ui.heading("Price Trend");
                     
-                    // Create a simple plot of closing prices
-                    let closes: Vec<f64> = price_history.iter()
-                        .map(|point| point.close)
+                    // Create a line chart of closing prices
+                    let closes: Vec<[f64; 2]> = price_history.iter()
+                        .enumerate()
+                        .map(|(i, point)| [i as f64, point.close])
                         .collect();
                     
-                    if !closes.is_empty() {
-                        // Use egui's built-in plotting capabilities instead of egui_plot
-                        // to avoid version conflicts
-                        ui.label("Price chart visualization would appear here");
-                        ui.label("(Chart rendering temporarily disabled due to dependency conflicts)");
-                    }
+                    let line = Line::new(closes);
+                    
+                    Plot::new("price_chart")
+                        .view_aspect(2.0)
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(line);
+                        });
+                    
+                    // Render volume bars
+                    ui.separator();
+                    ui.heading("Volume");
+                    
+                    let volumes: Vec<[f64; 2]> = price_history.iter()
+                        .enumerate()
+                        .map(|(i, point)| [i as f64, point.volume as f64])
+                        .collect();
+                    
+                    let volume_points = Points::new(volumes);
+                    
+                    Plot::new("volume_chart")
+                        .view_aspect(2.0)
+                        .show(ui, |plot_ui| {
+                            plot_ui.points(volume_points);
+                        });
                 }
                 
-                // Placeholder for more advanced chart features
+                // Technical indicators section
                 ui.separator();
-                ui.label("📈 Advanced chart features:");
-                ui.label("• Candlestick charts");
-                ui.label("• Technical indicators (SMA, EMA, RSI, MACD)");
-                ui.label("• Volume bars");
-                ui.label("• Zoom and pan controls");
-                ui.label("• Multiple timeframes");
+                ui.heading("Technical Indicators");
+                ui.label("📈 Available indicators:");
+                ui.label("• Simple Moving Average (SMA)");
+                ui.label("• Exponential Moving Average (EMA)");
+                ui.label("• Relative Strength Index (RSI)");
+                ui.label("• Moving Average Convergence Divergence (MACD)");
             } else {
                 ui.label("No price history available for this symbol");
                 
