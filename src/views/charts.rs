@@ -69,15 +69,15 @@ impl PortfolioComponent for ChartsComponent {
                         .collect();
                     
                     if !closes.is_empty() {
-                        // Simple line chart using egui's plot functionality
-                        use egui::plot::{Line, Plot, Points};
+                        // Simple line chart using egui_plot functionality
+                        use egui_plot::{Line, Plot};
                         
-                        let line: Line = Line::new(
-                            closes.iter()
-                                .enumerate()
-                                .map(|(i, &value)| [i as f64, value])
-                                .collect::<Vec<[f64; 2]>>()
-                        ).name("Close Price");
+                        let points: Vec<[f64; 2]> = closes.iter()
+                            .enumerate()
+                            .map(|(i, &value)| [i as f64, value])
+                            .collect();
+                        
+                        let line = Line::new("Close Price", points);
                         
                         Plot::new("price_chart")
                             .view_aspect(2.0)
