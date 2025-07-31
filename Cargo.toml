@@ -29,17 +29,14 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"     # For API JSON serialization/deserialization
 chrono = { version = "0.4", features = ["serde"] }  # Date/time handling for financial data
 
-# Platform-specific dependencies
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { version = "0.11", features = ["json"] }  # HTTP client for API calls
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }  # Async runtime
-
 [dev-dependencies]
 tokio-test = "0.4"     # For async testing
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11.8"
+reqwest = { version = "0.11", features = ["json"] }  # HTTP client for API calls
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }  # Async runtime
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
