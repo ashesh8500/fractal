@@ -1,6 +1,6 @@
 //! Technical indicators for financial analysis
 
-use super::types::{PricePoint, OhlcvBar};
+use super::types::PricePoint; // PricePoint is currently unused in this file, but keeping it for potential future use or consistency with other parts of the project that might interpret f64 slices as "PricePoints". OhlcvBar is definitely unused.
 
 /// Simple Moving Average
 pub fn sma(prices: &[f64], period: usize) -> Vec<f64> {
