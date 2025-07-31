@@ -3,10 +3,6 @@ use crate::components::ComponentManager;
 use crate::state::AppState;
 use std::sync::{Arc, Mutex};
 
-pub struct TemplateApp {
-    // ... existing fields
-}
-
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -261,7 +257,9 @@ impl TemplateApp {
     }
     
     /// Check for async operation results and update UI state
-    fn check_async_results(&mut self) {
+    fn check_async_results(&mut self, ctx: &egui::Context) {
+        let mut should_load_portfolios = false;
+        
         if let Ok(mut state) = self.async_state.lock() {
             // Check connection result
             if let Some(result) = state.connection_result.take() {
@@ -282,8 +280,8 @@ impl TemplateApp {
                 match result {
                     Ok(name) => {
                         self.test_message = format!("Portfolio '{}' created successfully! Loading portfolios...", name);
-                        // Auto-load portfolios after creation
-                        self.load_portfolios(&egui::Context::default());
+                        // Signal to load portfolios after releasing the lock
+                        should_load_portfolios = true;
                     }
                     Err(e) => {
                         self.test_message = format!("Portfolio creation failed: {}", e);
@@ -308,6 +306,11 @@ impl TemplateApp {
                     }
                 }
             }
+        }
+        
+        // Load portfolios after releasing the lock
+        if should_load_portfolios {
+            self.load_portfolios(ctx);
         }
     }
     
@@ -335,7 +338,7 @@ impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Check for async operation results
-        self.check_async_results();
+        self.check_async_results(ctx);
         
         // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
