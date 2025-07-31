@@ -37,8 +37,10 @@ impl<'a> CollapsiblePanel<'a> {
         let mut state = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(self.default_open));
         
         let header_res = ui.horizontal(|ui| {
-            ui.label(if state { "▼" } else { "▶" });
-            ui.heading(self.title);
+            let header = if state { "▼" } else { "▶" };
+            let response = ui.selectable_label(state, format!("{header} {}", self.title));
+            response.on_hover_text("Click to expand/collapse");
+            response
         });
 
         if header_res.response.clicked() {

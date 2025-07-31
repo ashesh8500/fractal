@@ -1,7 +1,7 @@
 //! Elegant metric card widget based on egui demo patterns
 //! Features: colored backgrounds, icons, hover effects
 
-use egui::{Color32, Response, Ui, Widget, Vec2, Rounding};
+use egui::{Color32, Response, Ui, Widget, Vec2, Rounding, Frame};
 
 pub struct MetricCard {
     label: String,
@@ -31,30 +31,26 @@ impl MetricCard {
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
-        let desired_size = Vec2::new(ui.available_width(), 60.0);
+        let desired_size = Vec2::new(ui.available_width(), 72.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
 
         if ui.is_rect_visible(rect) {
             let visuals = ui.style().interact(&response);
+            let base = self.color.unwrap_or(ui.visuals().widgets.noninteractive.bg_fill);
             let bg_color = if response.hovered() {
-                self.color
-                    .map(|c| c.linear_multiply(0.8))
-                    .unwrap_or(visuals.bg_fill)
+                base.gamma_multiply(0.9)
             } else {
-                self.color
-                    .map(|c| c.linear_multiply(0.6))
-                    .unwrap_or(ui.visuals().widgets.noninteractive.bg_fill)
+                base.gamma_multiply(0.8)
             };
 
-            // Draw background
-            ui.painter().rect(
-                rect,
-                Rounding::same(4.0),
-                bg_color,
-                visuals.bg_stroke,
-            );
+            // Background frame similar to demo style
+            Frame::none()
+                .fill(bg_color)
+                .stroke(visuals.bg_stroke)
+                .rounding(egui::style::CornerRadius::same(8.0))
+                .show(ui, |_| {});
 
-            // Layout content
+            // Use painter to draw within rect
             let text_color = if self.color.is_some() {
                 Color32::WHITE
             } else {
@@ -71,7 +67,7 @@ impl MetricCard {
                     text_pos,
                     egui::Align2::LEFT_TOP,
                     icon,
-                    egui::FontId::proportional(20.0),
+                    egui::FontId::proportional(22.0),
                     text_color,
                 );
                 text_pos.x += 30.0;
@@ -83,16 +79,23 @@ impl MetricCard {
                 egui::Align2::LEFT_TOP,
                 &self.label,
                 egui::FontId::proportional(14.0),
-                text_color.linear_multiply(0.8),
+                text_color.gamma_multiply(0.8),
             );
 
             // Draw value
             ui.painter().text(
-                content_rect.left_bottom() + Vec2::new(0.0, -5.0),
+                content_rect.left_bottom() + Vec2::new(0.0, -6.0),
                 egui::Align2::LEFT_BOTTOM,
                 &self.value,
-                egui::FontId::proportional(20.0).strong(),
+                egui::FontId::proportional(22.0).strong(),
                 text_color,
+            );
+
+            // Subtle outline
+            ui.painter().rect_stroke(
+                rect,
+                Rounding::same(8.0),
+                egui::Stroke::new(1.0, visuals.bg_stroke.color.gamma_multiply(0.2)),
             );
         }
 

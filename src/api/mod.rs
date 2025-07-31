@@ -27,7 +27,10 @@ impl ApiClient {
         if response.status().is_success() {
             Ok(())
         } else {
-            Err(ApiError::Backend(format!("Health check failed with status: {}", response.status())))
+                Err(ApiError::Backend(format!(
+                    "Health check failed with status: {}",
+                    response.status()
+                )))
         }
     }
     

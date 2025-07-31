@@ -3,7 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{Line, Plot, PlotPoints, Legend, LineStyle};
 use crate::portfolio::indicators::{sma, ema, rsi};
 
 pub struct ChartsComponent {
@@ -34,13 +34,16 @@ impl PortfolioComponent for ChartsComponent {
                     .selected_text(
                         self.selected_symbol
                             .as_ref()
-                            .unwrap_or(&"Select symbol".to_string())
+                            .cloned()
+                            .unwrap_or_else(|| "Select symbol".to_string())
                     )
                     .show_ui(ui, |ui| {
                         for symbol in &symbols {
                             ui.selectable_value(&mut self.selected_symbol, Some(symbol.clone()), symbol);
                         }
                     });
+            } else {
+                ui.weak("No symbols available");
             }
         });
         
@@ -52,13 +55,18 @@ impl PortfolioComponent for ChartsComponent {
                 
                 // Display basic price information
                 if let Some(latest) = price_history.last() {
-                    ui.label(format!("Latest Price: ${:.2}", latest.close));
-                    ui.label(format!("High: ${:.2}", latest.high));
-                    ui.label(format!("Low: ${:.2}", latest.low));
-                    ui.label(format!("Volume: {}", latest.volume));
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Latest: ${:.2}", latest.close));
+                        ui.separator();
+                        ui.label(format!("High: ${:.2}", latest.high));
+                        ui.separator();
+                        ui.label(format!("Low: ${:.2}", latest.low));
+                        ui.separator();
+                        ui.label(format!("Volume: {}", latest.volume));
+                    });
                 }
                 
-                ui.label(format!("Price history: {} data points", price_history.len()));
+                ui.weak(format!("Price history: {} data points", price_history.len()));
                 
                 // Render a line chart of closing prices
                 if !price_history.is_empty() {
@@ -77,10 +85,8 @@ impl PortfolioComponent for ChartsComponent {
                         .color(egui::Color32::BLUE)
                         .name("Price");
                     
-                    // Add technical indicators
-                    let mut lines = vec![price_line];
-                    
                     // SMA 20
+                    let mut lines = vec![price_line];
                     if close_prices.len() >= 20 {
                         let sma_20 = sma(&close_prices, 20);
                         let sma_points: Vec<[f64; 2]> = sma_20.iter()
@@ -108,14 +114,14 @@ impl PortfolioComponent for ChartsComponent {
                     
                     Plot::new("price_chart")
                         .view_aspect(2.0)
-                        .legend(egui_plot::Legend::default())
+                        .legend(Legend::default())
                         .show(ui, |plot_ui| {
                             for line in lines {
                                 plot_ui.line(line);
                             }
                         });
                     
-                    // Render volume bars
+                    // Render volume as a line
                     ui.separator();
                     ui.heading("Volume");
                     
@@ -149,7 +155,7 @@ impl PortfolioComponent for ChartsComponent {
                             .color(egui::Color32::YELLOW)
                             .name("RSI");
                         
-                        // Add overbought/oversold lines
+                        // Overbought/oversold lines, dashed
                         let overbought: Vec<[f64; 2]> = (0..rsi_values.len())
                             .map(|i| [(i + 14) as f64, 70.0])
                             .collect();
@@ -159,17 +165,17 @@ impl PortfolioComponent for ChartsComponent {
                         
                         let overbought_line = Line::new(PlotPoints::from(overbought))
                             .color(egui::Color32::RED)
-                            .style(egui_plot::LineStyle::Dashed { length: 5.0 })
+                            .style(LineStyle::Dashed { length: 5.0 })
                             .name("Overbought (70)");
                         
                         let oversold_line = Line::new(PlotPoints::from(oversold))
                             .color(egui::Color32::GREEN)
-                            .style(egui_plot::LineStyle::Dashed { length: 5.0 })
+                            .style(LineStyle::Dashed { length: 5.0 })
                             .name("Oversold (30)");
                         
                         Plot::new("rsi_chart")
                             .view_aspect(2.0)
-                            .legend(egui_plot::Legend::default())
+                            .legend(Legend::default())
                             .show(ui, |plot_ui| {
                                 plot_ui.line(rsi_line);
                                 plot_ui.line(overbought_line);
@@ -178,7 +184,6 @@ impl PortfolioComponent for ChartsComponent {
                     }
                 }
                 
-                // Technical indicators section
                 ui.separator();
                 ui.heading("Technical Indicators");
                 ui.label("📈 Available indicators:");
@@ -189,7 +194,6 @@ impl PortfolioComponent for ChartsComponent {
             } else {
                 ui.label("No price history available for this symbol");
                 
-                // Suggest fetching data
                 if ui.button("Fetch Price History").clicked() {
                     ui.label("Would fetch price history from backend...");
                 }

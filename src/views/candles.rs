@@ -3,7 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use egui_plot::{Bar, BarChart, Plot};
+use egui_plot::{Bar, BarChart, Plot, Legend};
 
 pub struct CandlesComponent {
     is_open: bool,
@@ -41,13 +41,16 @@ impl PortfolioComponent for CandlesComponent {
                     .selected_text(
                         self.selected_symbol
                             .as_ref()
-                            .unwrap_or(&"Select symbol".to_string())
+                            .cloned()
+                            .unwrap_or_else(|| "Select symbol".to_string())
                     )
                     .show_ui(ui, |ui| {
                         for symbol in &symbols {
                             ui.selectable_value(&mut self.selected_symbol, Some(symbol.clone()), symbol);
                         }
                     });
+            } else {
+                ui.weak("No symbols available");
             }
             
             ui.separator();
@@ -86,42 +89,37 @@ impl PortfolioComponent for CandlesComponent {
                     
                     ui.separator();
                     
-                    // Render candlestick chart
+                    // Render candlestick approximation using two bar charts (wick + body)
                     if !prices.is_empty() {
-                        let data_points = prices.len().min(100); // Limit for performance
-                        let start_idx = if prices.len() > data_points { 
-                            prices.len() - data_points 
-                        } else { 
-                            0 
-                        };
+                        let data_points = prices.len().min(150);
+                        let start_idx = prices.len().saturating_sub(data_points);
                         
-                        // Create candlestick visualization using multiple elements
-                        let mut high_low_bars = Vec::new();
-                        let mut body_bars = Vec::new();
+                        let mut high_low_bars = Vec::with_capacity(data_points);
+                        let mut body_bars = Vec::with_capacity(data_points);
                         
                         for (i, price) in prices[start_idx..].iter().enumerate() {
                             let x = i as f64;
                             
-                            // High-Low line (thin bar)
+                            // Wick approximated by a thin bar centered between high and low
                             let hl_height = price.high - price.low;
                             high_low_bars.push(
-                                Bar::new(x, price.low + hl_height/2.0)
+                                Bar::new(x, price.low + hl_height / 2.0)
                                     .width(0.1)
                                     .vertical()
                                     .fill(egui::Color32::GRAY)
                             );
                             
-                            // Body (thick bar)
+                            // Body approximated by thicker bar
                             let body_height = (price.close - price.open).abs();
                             let body_base = price.open.min(price.close);
                             let body_color = if price.close >= price.open {
                                 egui::Color32::from_rgb(0, 150, 0) // Green for bullish
                             } else {
-                                egui::Color32::from_rgb(150, 0, 0) // Red for bearish
+                                egui::Color32::from_rgb(180, 0, 0) // Red for bearish
                             };
                             
                             body_bars.push(
-                                Bar::new(x, body_base + body_height/2.0)
+                                Bar::new(x, body_base + body_height / 2.0)
                                     .width(0.6)
                                     .vertical()
                                     .fill(body_color)
@@ -133,7 +131,7 @@ impl PortfolioComponent for CandlesComponent {
                         
                         Plot::new("candlestick_chart")
                             .view_aspect(2.0)
-                            .legend(egui_plot::Legend::default())
+                            .legend(Legend::default())
                             .show(ui, |plot_ui| {
                                 plot_ui.bar_chart(hl_chart);
                                 plot_ui.bar_chart(body_chart);
@@ -143,11 +141,11 @@ impl PortfolioComponent for CandlesComponent {
                         ui.separator();
                         ui.heading("Volume");
                         
-                        let volumes: Vec<Bar> = prices.iter()
-                            .take(50)
+                        let volumes: Vec<Bar> = prices[start_idx..]
+                            .iter()
                             .enumerate()
                             .map(|(i, price)| {
-                                Bar::new(i as f64, price.volume as f64/2.0)
+                                Bar::new(i as f64, price.volume as f64 / 2.0)
                                     .width(0.8)
                                     .vertical()
                                     .name(format!("Volume {}", i))
@@ -155,8 +153,7 @@ impl PortfolioComponent for CandlesComponent {
                             })
                             .collect();
                         
-                        let volume_chart = BarChart::new(volumes)
-                            .name("Volume");
+                        let volume_chart = BarChart::new(volumes).name("Volume");
                         
                         Plot::new("volume_chart")
                             .view_aspect(2.0)

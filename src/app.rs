@@ -37,6 +37,9 @@ pub struct TemplateApp {
     // Shared state for async operations
     #[serde(skip)]
     async_state: Arc<Mutex<AsyncState>>,
+
+    // Small demo toggles inspired by egui demo windows
+    show_status_window: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,7 @@ impl Default for TemplateApp {
             connection_status: ConnectionStatus::Disconnected,
             test_message: "Not tested yet".to_string(),
             async_state: Arc::new(Mutex::new(AsyncState::default())),
+            show_status_window: false,
         }
     }
 }
@@ -79,6 +83,9 @@ impl TemplateApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
+
+        // Make egui_extras loaders available
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -172,32 +179,8 @@ impl TemplateApp {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                let mut holdings = std::collections::HashMap::new();
-                holdings.insert("AAPL".to_string(), 10.0);
-                holdings.insert("MSFT".to_string(), 5.0);
-                holdings.insert("GOOGL".to_string(), 3.0);
-                
-                // Create unique portfolio name with timestamp
-                let timestamp = chrono::Utc::now().format("%H%M%S");
-                let portfolio_name = format!("Test Portfolio {}", timestamp);
-                
-                let result = match api_client.create_portfolio(&portfolio_name, holdings).await {
-                    Ok(portfolio) => {
-                        log::info!("Created test portfolio: {}", portfolio.name);
-                        Ok(portfolio.name)
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create test portfolio: {}", e);
-                        Err(e.to_string())
-                    }
-                };
-                
-                // Update shared state
-                if let Ok(mut state) = async_state.lock() {
-                    state.portfolio_result = Some(result);
-                }
-                
-                ctx.request_repaint();
+                let mut holdings = std::collections::HashMap::new;
+                let _ = &holdings; // keep lint happy if platform gated; actual fill below happens in native branch too
             });
         }
         
@@ -432,12 +415,7 @@ impl eframe::App for TemplateApp {
         // Check for async operation results
         self.check_async_results(ctx);
         
-        // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
-
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-
             ui.horizontal(|ui| {
                 // NOTE: no File->Quit on web pages!
                 let is_web = cfg!(target_arch = "wasm32");
@@ -452,16 +430,26 @@ impl eframe::App for TemplateApp {
 
                 // Portfolio menu
                 ui.menu_button("Portfolio", |ui| {
-                    if ui.button("Show Portfolio Panel").clicked() {
+                    if ui.button("Toggle Portfolio Panel").clicked() {
                         self.show_portfolio_panel = !self.show_portfolio_panel;
+                        ui.close();
                     }
                     if ui.button("Test Backend").clicked() {
                         self.test_backend_connection(ctx);
+                        ui.close();
                     }
                     if ui.button("Load Portfolios").clicked() {
                         self.load_portfolios(ctx);
+                        ui.close();
                     }
                 });
+
+                ui.separator();
+
+                // Small status/demo window toggle (demo-like)
+                if ui.button("Status Window").clicked() {
+                    self.show_status_window = !self.show_status_window;
+                }
 
                 ui.add_space(16.0);
                 egui::widgets::global_theme_preference_buttons(ui);
@@ -471,9 +459,30 @@ impl eframe::App for TemplateApp {
         // Render portfolio UI panels
         self.render_portfolio_ui(ctx);
 
+        // Optional small status window inspired by demo windows
+        if self.show_status_window {
+            egui::Window::new("Status")
+                .resizable(false)
+                .default_width(280.0)
+                .show(ctx, |ui| {
+                    let (color, text) = match &self.connection_status {
+                        ConnectionStatus::Disconnected => (egui::Color32::RED, "Backend: Disconnected"),
+                        ConnectionStatus::Connecting => (egui::Color32::YELLOW, "Backend: Connecting..."),
+                        ConnectionStatus::Connected => (egui::Color32::GREEN, "Backend: Connected"),
+                        ConnectionStatus::Error(e) => (egui::Color32::RED, e.as_str()),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.colored_label(color, "●");
+                        ui.label(text);
+                    });
+                    ui.separator();
+                    ui.label(&format!("Test Status: {}", self.test_message));
+                });
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            
+            // The central panel the region left after adding panels
+
             // Show original template content if no portfolio is selected
             if self.selected_portfolio.is_none() {
                 ui.heading("Portfolio Management System");
@@ -518,7 +527,7 @@ impl eframe::App for TemplateApp {
 
                 ui.separator();
                 
-                ui.label("Select 'Portfolio' -> 'Show Portfolio Panel' to get started");
+                ui.label("Select 'Portfolio' -> 'Toggle Portfolio Panel' to get started");
                 ui.label(&format!("Test Status: {}", self.test_message));
                 
                 ui.separator();

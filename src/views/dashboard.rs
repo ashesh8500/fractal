@@ -18,99 +18,102 @@ impl PortfolioComponent for DashboardComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, _config: &Config) {
         ui.heading(&format!("Portfolio: {}", portfolio.name));
         
-        // Portfolio overview metrics
+        ui.add_space(4.0);
         ui.separator();
         
         egui::Grid::new("portfolio_overview")
             .num_columns(2)
-            .spacing([40.0, 4.0])
+            .spacing([40.0, 6.0])
+            .striped(true)
             .show(ui, |ui| {
-                ui.label("Total Value:");
-                ui.label(format!("${:.2}", portfolio.total_value));
+                ui.strong("Total Value:");
+                ui.label(format!("${:.2}", portfolio.total_value))
+                    .on_hover_text("Sum of all position values using current weights and total value.");
                 ui.end_row();
                 
-                ui.label("Holdings:");
+                ui.strong("Holdings:");
                 ui.label(format!("{} positions", portfolio.holdings.len()));
                 ui.end_row();
                 
-                ui.label("Data Provider:");
+                ui.strong("Data Provider:");
                 ui.label(&portfolio.data_provider);
                 ui.end_row();
                 
-                ui.label("Last Updated:");
+                ui.strong("Last Updated:");
                 ui.label(portfolio.last_updated.format("%Y-%m-%d %H:%M UTC").to_string());
                 ui.end_row();
             });
         
         ui.separator();
-        
-        // Risk metrics
         ui.heading("Risk Metrics");
         egui::Grid::new("risk_metrics")
             .num_columns(2)
-            .spacing([40.0, 4.0])
+            .spacing([40.0, 6.0])
+            .striped(true)
             .show(ui, |ui| {
-                ui.label("Volatility:");
-                ui.label(format!("{:.2}%", portfolio.risk_metrics.volatility * 100.0));
+                ui.strong("Volatility:");
+                ui.label(format!("{:.2}%", portfolio.risk_metrics.volatility * 100.0))
+                    .on_hover_text("Standard deviation of returns (annualized).");
                 ui.end_row();
                 
-                ui.label("Sharpe Ratio:");
-                ui.label(format!("{:.2}", portfolio.risk_metrics.sharpe_ratio));
+                ui.strong("Sharpe Ratio:");
+                ui.label(format!("{:.2}", portfolio.risk_metrics.sharpe_ratio))
+                    .on_hover_text("Risk-adjusted return relative to risk-free rate.");
                 ui.end_row();
                 
-                ui.label("Max Drawdown:");
+                ui.strong("Max Drawdown:");
                 ui.label(format!("{:.2}%", portfolio.risk_metrics.max_drawdown * 100.0));
                 ui.end_row();
                 
-                ui.label("VaR (95%):");
+                ui.strong("VaR (95%):");
                 ui.label(format!("{:.2}%", portfolio.risk_metrics.var_95 * 100.0));
                 ui.end_row();
             });
         
         ui.separator();
-        
-        // Performance metrics
         ui.heading("Performance Metrics");
         egui::Grid::new("performance_metrics")
             .num_columns(2)
-            .spacing([40.0, 4.0])
+            .spacing([40.0, 6.0])
+            .striped(true)
             .show(ui, |ui| {
-                ui.label("Total Return:");
+                ui.strong("Total Return:");
                 ui.label(format!("{:.2}%", portfolio.performance_metrics.total_return * 100.0));
                 ui.end_row();
                 
-                ui.label("Annualized Return:");
+                ui.strong("Annualized Return:");
                 ui.label(format!("{:.2}%", portfolio.performance_metrics.annualized_return * 100.0));
                 ui.end_row();
                 
-                ui.label("Alpha:");
+                ui.strong("Alpha:");
                 ui.label(format!("{:.2}%", portfolio.performance_metrics.alpha * 100.0));
                 ui.end_row();
                 
-                ui.label("Beta:");
+                ui.strong("Beta:");
                 ui.label(format!("{:.2}", portfolio.performance_metrics.beta));
                 ui.end_row();
             });
         
-        // Holdings breakdown
         if !portfolio.holdings.is_empty() {
             ui.separator();
             ui.heading("Holdings");
             
-            for (symbol, shares) in &portfolio.holdings {
-                ui.horizontal(|ui| {
-                    ui.label(symbol);
-                    ui.label(format!("{:.2} shares", shares));
-                    
-                    if let Some(weight) = portfolio.current_weights.get(symbol) {
-                        ui.label(format!("({:.1}%)", weight * 100.0));
-                    }
-                    
-                    if let Some(position_value) = portfolio.get_position_value(symbol) {
-                        ui.label(format!("${:.2}", position_value));
-                    }
-                });
-            }
+            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                for (symbol, shares) in &portfolio.holdings {
+                    ui.horizontal(|ui| {
+                        ui.monospace(symbol);
+                        ui.label(format!("{:.2} shares", shares));
+                        
+                        if let Some(weight) = portfolio.current_weights.get(symbol) {
+                            ui.weak(format!("({:.1}%)", weight * 100.0));
+                        }
+                        
+                        if let Some(position_value) = portfolio.get_position_value(symbol) {
+                            ui.label(format!("${:.2}", position_value));
+                        }
+                    });
+                }
+            });
         }
     }
     

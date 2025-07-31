@@ -43,10 +43,15 @@ impl ResponsiveGrid {
             .max(1)
             .min(self.max_columns);
         
-        let col_width = (available_width - self.spacing.x * (num_columns - 1) as f32) / num_columns as f32;
+        let col_width =
+            (available_width - self.spacing.x * (num_columns.saturating_sub(1)) as f32) / num_columns as f32;
 
-        let items: Vec<_> = items.into_iter().collect();
-        let num_rows = (items.len() + num_columns - 1) / num_columns;
+        let items_vec: Vec<_> = items.into_iter().collect();
+        let total = items_vec.len();
+        if total == 0 {
+            return;
+        }
+        let num_rows = (total + num_columns - 1) / num_columns;
 
         for row in 0..num_rows {
             ui.horizontal(|ui| {
@@ -54,9 +59,10 @@ impl ResponsiveGrid {
                 
                 for col in 0..num_columns {
                     let index = row * num_columns + col;
-                    if index < items.len() {
+                    if index < total {
+                        let item = &items_vec[index];
                         ui.allocate_ui(Vec2::new(col_width, 0.0), |ui| {
-                            items.into_iter().nth(index).unwrap()(ui);
+                            item(ui);
                         });
                     } else {
                         ui.allocate_space(Vec2::new(col_width, 0.0));

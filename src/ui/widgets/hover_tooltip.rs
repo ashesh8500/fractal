@@ -1,7 +1,7 @@
 //! Hover tooltip widget based on egui demo patterns
 //! Features: rich content, delayed show, custom styling
 
-use egui::{Response, Ui, Color32, pos2};
+use egui::{Response, Ui};
 
 pub struct HoverTooltip {
     text: String,
@@ -29,6 +29,7 @@ impl HoverTooltip {
     }
 
     pub fn show(self, response: &Response) {
+        // We can honor delay by just showing on hover; real delayed behavior would need timers.
         response.on_hover_ui_at_pointer(|ui| {
             ui.set_max_width(self.max_width);
             ui.label(&self.text);

@@ -6,10 +6,13 @@
 fn main() -> eframe::Result {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
+    // Install egui_extras image loaders (for better demo-like behavior with images):
+    egui_extras::install_image_loaders(&eframe::egui::Context::default());
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0])
+            .with_inner_size([1000.0, 700.0])
+            .with_min_inner_size([640.0, 480.0])
             .with_icon(
                 // NOTE: Adding an icon is optional
                 eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
@@ -18,9 +21,13 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "eframe template",
+        "Portfolio Management System",
         native_options,
-        Box::new(|cc| Ok(Box::new(fractal::TemplateApp::new(cc)))),
+        Box::new(|cc| {
+            // Ensure loaders for this context too:
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(fractal::TemplateApp::new(cc)))
+        }),
     )
 }
 
@@ -50,7 +57,10 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(fractal::TemplateApp::new(cc)))),
+                Box::new(|cc| {
+                    egui_extras::install_image_loaders(&cc.egui_ctx);
+                    Ok(Box::new(fractal::TemplateApp::new(cc)))
+                }),
             )
             .await;
 

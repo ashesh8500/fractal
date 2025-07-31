@@ -39,40 +39,44 @@ impl PortfolioComponent for TablesComponent {
         if self.show_holdings {
             ui.heading("Holdings");
             
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    egui::Grid::new("holdings_table")
-                        .striped(true)
-                        .num_columns(4)
-                        .show(ui, |ui| {
-                            // Header
-                            ui.strong("Symbol");
-                            ui.strong("Shares");
-                            ui.strong("Weight");
-                            ui.strong("Value");
-                            ui.end_row();
-                            
-                            // Data rows
-                            for (symbol, shares) in &portfolio.holdings {
-                                ui.label(symbol);
-                                ui.label(format!("{:.2}", shares));
-                                
+            egui_extras::TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .column(egui_extras::Column::auto())
+                .column(egui_extras::Column::auto())
+                .column(egui_extras::Column::auto())
+                .column(egui_extras::Column::remainder())
+                .min_scrolled_height(0.0)
+                .body(|mut body| {
+                    let text_height = egui::TextStyle::Body.resolve(ui.style()).size.max(ui.spacing().interact_size.y);
+                    // Header
+                    body.row(22.0, |mut row| {
+                        row.col(|ui| ui.strong("Symbol"));
+                        row.col(|ui| ui.strong("Shares"));
+                        row.col(|ui| ui.strong("Weight"));
+                        row.col(|ui| ui.strong("Value"));
+                    });
+                    // Data
+                    for (symbol, shares) in &portfolio.holdings {
+                        body.row(text_height, |mut row| {
+                            row.col(|ui| ui.monospace(symbol));
+                            row.col(|ui| ui.label(format!("{:.2}", shares)));
+                            row.col(|ui| {
                                 if let Some(weight) = portfolio.current_weights.get(symbol) {
                                     ui.label(format!("{:.1}%", weight * 100.0));
                                 } else {
-                                    ui.label("N/A");
+                                    ui.weak("N/A");
                                 }
-                                
+                            });
+                            row.col(|ui| {
                                 if let Some(value) = portfolio.get_position_value(symbol) {
                                     ui.label(format!("${:.2}", value));
                                 } else {
-                                    ui.label("N/A");
+                                    ui.weak("N/A");
                                 }
-                                
-                                ui.end_row();
-                            }
+                            });
                         });
+                    }
                 });
             
             ui.separator();
@@ -84,8 +88,7 @@ impl PortfolioComponent for TablesComponent {
             
             if let Some(backtest_results) = &portfolio.backtest_results {
                 ui.label(format!("Trades executed: {}", backtest_results.trades_executed));
-                // TODO: Show actual trade details when available
-                ui.label("Trade history will be displayed here");
+                ui.weak("Trade history will be displayed here");
             } else {
                 ui.label("No trade data available");
             }
@@ -97,47 +100,28 @@ impl PortfolioComponent for TablesComponent {
         if self.show_metrics {
             ui.heading("All Metrics");
             
-            egui::Grid::new("metrics_table")
+            egui_extras::TableBuilder::new(ui)
                 .striped(true)
-                .num_columns(2)
-                .show(ui, |ui| {
-                    ui.strong("Metric");
-                    ui.strong("Value");
-                    ui.end_row();
-                    
-                    // Risk metrics
-                    ui.label("Volatility");
-                    ui.label(format!("{:.2}%", portfolio.risk_metrics.volatility * 100.0));
-                    ui.end_row();
-                    
-                    ui.label("Sharpe Ratio");
-                    ui.label(format!("{:.2}", portfolio.risk_metrics.sharpe_ratio));
-                    ui.end_row();
-                    
-                    ui.label("Max Drawdown");
-                    ui.label(format!("{:.2}%", portfolio.risk_metrics.max_drawdown * 100.0));
-                    ui.end_row();
-                    
-                    ui.label("VaR (95%)");
-                    ui.label(format!("{:.2}%", portfolio.risk_metrics.var_95 * 100.0));
-                    ui.end_row();
-                    
-                    // Performance metrics
-                    ui.label("Total Return");
-                    ui.label(format!("{:.2}%", portfolio.performance_metrics.total_return * 100.0));
-                    ui.end_row();
-                    
-                    ui.label("Annualized Return");
-                    ui.label(format!("{:.2}%", portfolio.performance_metrics.annualized_return * 100.0));
-                    ui.end_row();
-                    
-                    ui.label("Alpha");
-                    ui.label(format!("{:.2}%", portfolio.performance_metrics.alpha * 100.0));
-                    ui.end_row();
-                    
-                    ui.label("Beta");
-                    ui.label(format!("{:.2}", portfolio.performance_metrics.beta));
-                    ui.end_row();
+                .resizable(true)
+                .column(egui_extras::Column::auto())
+                .column(egui_extras::Column::remainder())
+                .body(|mut body| {
+                    let row_height = 22.0;
+                    let row = |mut body: egui_extras::TableBody, k: &str, v: String| {
+                        body.row(row_height, |mut r| {
+                            r.col(|ui| ui.strong(k));
+                            r.col(|ui| ui.label(v));
+                        });
+                    };
+                    row(body.borrow_mut(), "Volatility", format!("{:.2}%", portfolio.risk_metrics.volatility * 100.0));
+                    row(body.borrow_mut(), "Sharpe Ratio", format!("{:.2}", portfolio.risk_metrics.sharpe_ratio));
+                    row(body.borrow_mut(), "Max Drawdown", format!("{:.2}%", portfolio.risk_metrics.max_drawdown * 100.0));
+                    row(body.borrow_mut(), "VaR (95%)", format!("{:.2}%", portfolio.risk_metrics.var_95 * 100.0));
+
+                    row(body.borrow_mut(), "Total Return", format!("{:.2}%", portfolio.performance_metrics.total_return * 100.0));
+                    row(body.borrow_mut(), "Annualized Return", format!("{:.2}%", portfolio.performance_metrics.annualized_return * 100.0));
+                    row(body.borrow_mut(), "Alpha", format!("{:.2}%", portfolio.performance_metrics.alpha * 100.0));
+                    row(body.borrow_mut(), "Beta", format!("{:.2}", portfolio.performance_metrics.beta));
                 });
         }
     }

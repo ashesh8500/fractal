@@ -1,7 +1,7 @@
 //! Enhanced scrollable table widget based on egui demo patterns
 //! Features: striped rows, selection, proper scrolling, tooltips
 
-use egui::{Color32, Response, Ui, Widget};
+use egui::{Response, Ui, Widget};
 use std::collections::HashSet;
 
 pub struct ScrollableTable<'a> {
@@ -61,7 +61,7 @@ impl<'a> Widget for ScrollableTable<'a> {
             rows,
             striped,
             max_height,
-            selected_rows,
+            mut selected_rows,
             clickable,
         } = self;
 
@@ -69,69 +69,81 @@ impl<'a> Widget for ScrollableTable<'a> {
             .id_source(id)
             .max_height(max_height)
             .show(ui, |ui| {
-                egui::Grid::new(id.with("grid"))
+                let grid = egui::Grid::new(id.with("grid"))
                     .striped(striped)
                     .num_columns(headers.len())
-                    .min_col_width(50.0)
-                    .show(ui, |ui| {
-                        // Headers
-                        for header in &headers {
-                            ui.strong(*header);
-                        }
-                        ui.end_row();
+                    .min_col_width(50.0);
 
-                        // Data rows
-                        for (row_idx, row_data) in rows.iter().enumerate() {
-                            let is_selected = selected_rows.contains(&row_idx);
-                            
-                            // Create a sense for the entire row if clickable
-                            let row_rect = ui.max_rect();
-                            let row_id = id.with(("row", row_idx));
-                            let row_response = if clickable {
-                                ui.interact(row_rect, row_id, egui::Sense::click())
+                grid.show(ui, |ui| {
+                    // Headers
+                    for header in &headers {
+                        ui.strong(*header);
+                    }
+                    ui.end_row();
+
+                    // Data rows
+                    let text_height = egui::TextStyle::Body
+                        .resolve(ui.style())
+                        .size
+                        .max(ui.spacing().interact_size.y);
+
+                    for (row_idx, row_data) in rows.iter().enumerate() {
+                        // Start row layout: allocate a rect per row using a dummy full-width area.
+                        let row_start = ui.cursor();
+                        // Render cells, gathering widest height automatically:
+                        for (col_idx, cell) in row_data.iter().enumerate() {
+                            let cell_response = ui.label(cell);
+                            if cell_response.truncated {
+                                cell_response.on_hover_text(cell);
+                            }
+                            // After last column in row, end row:
+                            if col_idx == row_data.len() - 1 {
+                                ui.end_row();
+                            }
+                        }
+                        // Now retrieve the row rect by combining from row_start to current:
+                        let row_rect = egui::Rect::from_min_max(row_start.min, ui.cursor().min);
+
+                        // Interaction overlay for the row:
+                        let row_id = id.with(("row", row_idx));
+                        let sense = if clickable {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        };
+                        let response = ui.interact(row_rect, row_id, sense);
+
+                        // Selection toggle
+                        if clickable && response.clicked() {
+                            if selected_rows.contains(&row_idx) {
+                                selected_rows.remove(&row_idx);
                             } else {
-                                ui.interact(row_rect, row_id, egui::Sense::hover())
-                            };
-
-                            // Highlight selected rows
-                            if is_selected {
-                                ui.painter().rect_filled(
-                                    row_rect,
-                                    0.0,
-                                    ui.visuals().selection.bg_fill,
-                                );
+                                selected_rows.insert(row_idx);
                             }
-
-                            // Hover effect
-                            if row_response.hovered() && !is_selected {
-                                ui.painter().rect_filled(
-                                    row_rect,
-                                    0.0,
-                                    ui.visuals().widgets.hovered.bg_fill,
-                                );
-                            }
-
-                            // Handle row click
-                            if clickable && row_response.clicked() {
-                                if selected_rows.contains(&row_idx) {
-                                    selected_rows.remove(&row_idx);
-                                } else {
-                                    selected_rows.insert(row_idx);
-                                }
-                            }
-
-                            // Render cells
-                            for (col_idx, cell) in row_data.iter().enumerate() {
-                                let cell_response = ui.label(cell);
-                                
-                                // Add tooltip for truncated text
-                                if cell_response.truncated {
-                                    cell_response.on_hover_text(cell);
-                                }
-                            }
-                            ui.end_row();
                         }
-                    })
+
+                        // Hover and selection paints
+                        if selected_rows.contains(&row_idx) {
+                            ui.painter().rect_filled(
+                                row_rect,
+                                0.0,
+                                ui.visuals().selection.bg_fill,
+                            );
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(
+                                row_rect,
+                                0.0,
+                                ui.visuals().widgets.hovered.bg_fill,
+                            );
+                        }
+
+                        // Ensure a minimum row height:
+                        let current_height = row_rect.height();
+                        if current_height < text_height {
+                            ui.add_space(text_height - current_height);
+                        }
+                    }
+                });
             })
             .response
     }
