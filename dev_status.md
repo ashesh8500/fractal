@@ -91,13 +91,22 @@
 - **Frontend Components**: Not yet implemented
 - **Integration**: Not yet tested
 
+## Current Issues (Priority Order)
+1. **CRITICAL**: Historical data shows "None" on UI - portfolios from backend don't contain price_history field
+2. **CRITICAL**: Candles widget has repeated widget ID causing egui errors (ComboBox needs unique IDs)
+3. **HIGH**: Windows opened by candles/tables buttons cannot be closed using window close button
+4. **MEDIUM**: Backend only provides current market data via /market-data endpoint, no historical price data
+5. **MEDIUM**: Component window management needs proper open/close state handling
+6. **MEDIUM**: Frontend expects price_history but backend portfolios don't populate this field
+7. **LOW**: Charts components show placeholder text instead of actual data visualization
+
 ## Next Actions (Priority Order)
-1. **Phase 3**: ✅ Frontend foundation completed
-2. **CURRENT**: Test backend-frontend communication
-3. Implement async portfolio loading and state updates
-4. Add comprehensive error handling and user feedback
-5. Complete portfolio CRUD operations in UI
-6. Implement real-time data updates
+1. **CURRENT**: Fix UI component issues identified above
+2. Add proper price history data to backend portfolio responses using existing market-data endpoint
+3. Fix widget ID conflicts in component rendering
+4. Implement proper window close functionality for component windows
+5. Connect real market data to chart components
+6. Add comprehensive error handling and user feedback
 
 ## Testing Instructions
 1. Start backend server: `python test_integration.py`
