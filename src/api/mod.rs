@@ -95,6 +95,21 @@ impl ApiClient {
             Err(ApiError::Backend(error.to_string()))
         }
     }
+    
+    /// Get historic price data for symbols
+    pub async fn get_historic_prices(&self, symbols: &[String], start_date: &str, end_date: &str) -> Result<HashMap<String, Vec<crate::portfolio::PricePoint>>, ApiError> {
+        let symbols_str = symbols.join(",");
+        let url = format!("{}/market-data/history?symbols={}&start_date={}&end_date={}", self.base_url, symbols_str, start_date, end_date);
+        let response = self.client.get(&url).send().await?;
+        
+        if response.status().is_success() {
+            let data: HashMap<String, Vec<crate::portfolio::PricePoint>> = response.json().await?;
+            Ok(data)
+        } else {
+            let error: Value = response.json().await?;
+            Err(ApiError::Backend(error.to_string()))
+        }
+    }
 }
 
 #[derive(Debug)]

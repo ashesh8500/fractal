@@ -88,4 +88,15 @@ impl Portfolio {
                     .map(|weight| self.total_value * weight)
             })
     }
+    
+    /// Update price history with new data
+    pub fn update_price_history(&mut self, history: HashMap<String, Vec<PricePoint>>) {
+        self.price_history = Some(history);
+        self.last_updated = Utc::now();
+    }
+    
+    /// Get price history for a symbol
+    pub fn get_price_history(&self, symbol: &str) -> Option<&Vec<PricePoint>> {
+        self.price_history.as_ref()?.get(symbol)
+    }
 }
