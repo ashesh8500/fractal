@@ -110,10 +110,10 @@ impl TemplateApp {
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
         
-        // Use a thread to handle the async operation
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async move {
+        // Use WASM-compatible async execution
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
                 let result = match api_client.test_health().await {
                     Ok(_) => {
                         log::info!("Backend connection successful");
@@ -132,7 +132,34 @@ impl TemplateApp {
                 
                 ctx.request_repaint();
             });
-        });
+        }
+        
+        // Use thread for native
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async move {
+                    let result = match api_client.test_health().await {
+                        Ok(_) => {
+                            log::info!("Backend connection successful");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            log::error!("Backend connection failed: {}", e);
+                            Err(e.to_string())
+                        }
+                    };
+                    
+                    // Update shared state
+                    if let Ok(mut state) = async_state.lock() {
+                        state.connection_result = Some(result);
+                    }
+                    
+                    ctx.request_repaint();
+                });
+            });
+        }
     }
     
     /// Create a test portfolio with unique name
@@ -141,9 +168,10 @@ impl TemplateApp {
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
         
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async move {
+        // Use WASM-compatible async execution
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
                 let mut holdings = std::collections::HashMap::new();
                 holdings.insert("AAPL".to_string(), 10.0);
                 holdings.insert("MSFT".to_string(), 5.0);
@@ -171,7 +199,43 @@ impl TemplateApp {
                 
                 ctx.request_repaint();
             });
-        });
+        }
+        
+        // Use thread for native
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async move {
+                    let mut holdings = std::collections::HashMap::new();
+                    holdings.insert("AAPL".to_string(), 10.0);
+                    holdings.insert("MSFT".to_string(), 5.0);
+                    holdings.insert("GOOGL".to_string(), 3.0);
+                    
+                    // Create unique portfolio name with timestamp
+                    let timestamp = chrono::Utc::now().format("%H%M%S");
+                    let portfolio_name = format!("Test Portfolio {}", timestamp);
+                    
+                    let result = match api_client.create_portfolio(&portfolio_name, holdings).await {
+                        Ok(portfolio) => {
+                            log::info!("Created test portfolio: {}", portfolio.name);
+                            Ok(portfolio.name)
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create test portfolio: {}", e);
+                            Err(e.to_string())
+                        }
+                    };
+                    
+                    // Update shared state
+                    if let Ok(mut state) = async_state.lock() {
+                        state.portfolio_result = Some(result);
+                    }
+                    
+                    ctx.request_repaint();
+                });
+            });
+        }
     }
     
     /// Load portfolios from backend
@@ -180,9 +244,10 @@ impl TemplateApp {
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
         
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async move {
+        // Use WASM-compatible async execution
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
                 let result = match api_client.get_portfolios().await {
                     Ok(portfolios) => {
                         log::info!("Loaded {} portfolios", portfolios.len());
@@ -201,7 +266,34 @@ impl TemplateApp {
                 
                 ctx.request_repaint();
             });
-        });
+        }
+        
+        // Use thread for native
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async move {
+                    let result = match api_client.get_portfolios().await {
+                        Ok(portfolios) => {
+                            log::info!("Loaded {} portfolios", portfolios.len());
+                            Ok(portfolios)
+                        }
+                        Err(e) => {
+                            log::error!("Failed to load portfolios: {}", e);
+                            Err(e.to_string())
+                        }
+                    };
+                    
+                    // Update shared state
+                    if let Ok(mut state) = async_state.lock() {
+                        state.portfolios_result = Some(result);
+                    }
+                    
+                    ctx.request_repaint();
+                });
+            });
+        }
     }
     
     /// Render portfolio-specific UI panels
