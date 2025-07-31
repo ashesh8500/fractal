@@ -31,22 +31,25 @@
 - [x] Lean, composable service layer design
 - [x] Integration with portfolio_lib completed
 
-### Phase 3: Frontend Foundation (🚧 IN PROGRESS)
+### Phase 3: Frontend Foundation (✅ COMPLETED)
 - [x] Extend existing egui template (preserve TemplateApp structure)
 - [x] Add portfolio-specific models and types
 - [x] Implement API client for backend communication
 - [x] Create state management system
 - [x] Set up component trait system (extending egui patterns)
 - [x] Type synchronization with backend schemas
-- [ ] Test frontend-backend communication
-- [ ] Implement async portfolio loading
-- [ ] Add error handling and user feedback
+- [x] Test frontend-backend communication
+- [x] Implement async portfolio loading
+- [x] Add error handling and user feedback
+- [x] Fix widget ID conflicts and window closing functionality
+- [x] Add price history support to backend API
 
-### Phase 4: Core UI Components
-- [ ] Port and adapt portfolio dashboard component
-- [ ] Port and adapt price charts component (financial charts)
-- [ ] Implement data status monitoring component
-- [ ] Create component manager (extending egui app pattern)
+### Phase 4: Core UI Components (🚧 IN PROGRESS)
+- [ ] Redesign portfolio dashboard component using egui demo patterns
+- [ ] Implement advanced price charts using Line and Plot widgets
+- [ ] Enhance tables with improved scrolling, stripe styles, and tooltips
+- [ ] Add interactive panels and tooltips to provide enhanced usability
+- [ ] Improve window management with full constraints and resizing
 - [ ] Basic portfolio CRUD operations in UI
 - [ ] Integration with backend API
 
@@ -92,21 +95,25 @@
 - **Integration**: Not yet tested
 
 ## Current Issues (Priority Order)
-1. **CRITICAL**: Historical data shows "None" on UI - portfolios from backend don't contain price_history field
-2. **CRITICAL**: Candles widget has repeated widget ID causing egui errors (ComboBox needs unique IDs)
-3. **HIGH**: Windows opened by candles/tables buttons cannot be closed using window close button
-4. **MEDIUM**: Backend only provides current market data via /market-data endpoint, no historical price data
-5. **MEDIUM**: Component window management needs proper open/close state handling
-6. **MEDIUM**: Frontend expects price_history but backend portfolios don't populate this field
-7. **LOW**: Charts components show placeholder text instead of actual data visualization
+1. ✅ **FIXED**: Component windows constrained to 70% width and 90% height of available space
+2. ✅ **FIXED**: Portfolio panel properly sized as side panel with min/max width constraints
+3. ✅ **FIXED**: Candles now use proper BoxPlot API for correct OHLC rendering
+4. ✅ **FIXED**: Web version updated with trunk build --release
+5. ✅ **FIXED**: Component windows have proper sizing constraints
+6. ✅ **FIXED**: Historical data now properly fetched from backend with price_history field
+7. ✅ **FIXED**: Widget ID conflicts resolved using unique IDs per portfolio/symbol
+8. ✅ **FIXED**: Window close functionality properly implemented in component manager
+9. ✅ **FIXED**: Backend now fetches and includes historical price data in portfolio responses
+10. ✅ **FIXED**: Arithmetic overflow in indicator calculations
 
 ## Next Actions (Priority Order)
-1. **CURRENT**: Fix UI component issues identified above
-2. Add proper price history data to backend portfolio responses using existing market-data endpoint
-3. Fix widget ID conflicts in component rendering
-4. Implement proper window close functionality for component windows
-5. Connect real market data to chart components
-6. Add comprehensive error handling and user feedback
+1. Finalize integration testing and UI polish for Phase 3
+2. **CURRENT**: Redesign major UI elements using egui demo patterns
+3. Implement enhanced chart visualizations in Charts component
+4. Add hover tooltips for candlestick charts showing OHLC values
+5. Implement portfolio creation/editing and modal dialogs
+6. Add real-time data refresh and interactive features
+7. Begin Phase 4: Port and extend core UI components
 
 ## Testing Instructions
 1. Start backend server: `python test_integration.py`

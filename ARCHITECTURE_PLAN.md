@@ -254,10 +254,26 @@ src/
 │   ├── api_client.rs                 # Backend API client
 │   └── state_manager.rs              # Application state management
 │
+├── ui/
+│   ├── mod.rs
+│   ├── widgets/
+│   │   ├── mod.rs
+│   │   ├── scrollable_table.rs       # Enhanced table with scroll and selection
+│   │   ├── resizable_panel.rs        # Panel with resize handle
+│   │   ├── chart_panel.rs            # Chart container with zoom/pan
+│   │   └── metric_card.rs            # Elegant metric display cards
+│   │
+│   └── layouts/
+│       ├── mod.rs
+│       ├── grid_layout.rs            # Responsive grid system
+│       ├── strip_layout.rs           # Strip-based layouts
+│       └── panel_system.rs           # Advanced panel management
+│
 └── utils/
     ├── mod.rs
     ├── formatting.rs                 # Value formatting utilities
-    └── colors.rs                     # Color schemes and themes
+    ├── colors.rs                     # Color schemes and themes
+    └── ui_helpers.rs                 # UI utility functions
 ```
 
 ### Component Architecture
@@ -319,17 +335,23 @@ shared/
 - [ ] Add persistence layer
 - [ ] API integration tests
 
-### Phase 3: Frontend Foundation
-- [ ] Set up Rust project structure
-- [ ] Implement type synchronization
-- [ ] Create basic API client
-- [ ] Main app shell and state management
+### Phase 3: Frontend Foundation (✅ COMPLETED)
+- [x] Set up Rust project structure
+- [x] Implement type synchronization
+- [x] Create basic API client
+- [x] Main app shell and state management
+- [x] Fix UI layout issues (window constraints, panel sizing)
+- [x] Implement proper candlestick rendering with BoxPlot API
+- [x] Resolve widget ID conflicts
+- [x] Add price history fetching from backend
 
-### Phase 4: Core Components
-- [ ] Port portfolio dashboard component
-- [ ] Port price charts component
-- [ ] Implement data status monitoring
-- [ ] Basic UI integration
+### Phase 4: Core UI Components (🚧 IN PROGRESS)
+- [ ] Enhance portfolio dashboard with egui demo patterns
+- [ ] Implement advanced price charts with technical indicators
+- [ ] Create elegant tables with proper scrolling and striping
+- [ ] Add interactive panels with resize capabilities
+- [ ] Implement modals and popups for forms
+- [ ] Add tooltips and hover interactions
 
 ### Phase 5: Advanced Features
 - [ ] Port risk dashboard and backtest analyzer
