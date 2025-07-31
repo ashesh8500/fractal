@@ -3,7 +3,7 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use egui_plot::{Bar, BarChart, Plot};
+use egui_plot::{Bar, BarChart, Plot, PlotPoints, Line};
 
 pub struct CandlesComponent {
     is_open: bool,
@@ -88,35 +88,57 @@ impl PortfolioComponent for CandlesComponent {
                     
                     // Render candlestick chart
                     if !prices.is_empty() {
-                        // Create a simplified candlestick visualization using bar charts
-                        let candles: Vec<Bar> = prices.iter()
-                            .take(50) // Limit to last 50 data points for clarity
-                            .enumerate()
-                            .map(|(i, price)| {
-                                // Create a bar representing the price range (high to low)
-                                let height = price.high - price.low;
-                                let base = price.low;
-                                
-                                Bar::new(i as f64, height)
-                                    .base(base)
-                                    .vertical()
-                                    .name(format!("Day {}", i))
-                                    .fill(if price.close >= price.open {
-                                        egui::Color32::GREEN
-                                    } else {
-                                        egui::Color32::RED
-                                    })
-                            })
-                            .collect();
+                        let data_points = prices.len().min(100); // Limit for performance
+                        let start_idx = if prices.len() > data_points { 
+                            prices.len() - data_points 
+                        } else { 
+                            0 
+                        };
                         
-                        let candle_chart = BarChart::new(candles)
-                            .width(0.8)
-                            .name("Candles");
+                        // Create candlestick visualization using multiple elements
+                        let mut high_low_bars = Vec::new();
+                        let mut body_bars = Vec::new();
+                        
+                        for (i, price) in prices[start_idx..].iter().enumerate() {
+                            let x = i as f64;
+                            
+                            // High-Low line (thin bar)
+                            let hl_height = price.high - price.low;
+                            high_low_bars.push(
+                                Bar::new(x, hl_height)
+                                    .base(price.low)
+                                    .width(0.1)
+                                    .vertical()
+                                    .fill(egui::Color32::GRAY)
+                            );
+                            
+                            // Body (thick bar)
+                            let body_height = (price.close - price.open).abs();
+                            let body_base = price.open.min(price.close);
+                            let body_color = if price.close >= price.open {
+                                egui::Color32::from_rgb(0, 150, 0) // Green for bullish
+                            } else {
+                                egui::Color32::from_rgb(150, 0, 0) // Red for bearish
+                            };
+                            
+                            body_bars.push(
+                                Bar::new(x, body_height)
+                                    .base(body_base)
+                                    .width(0.6)
+                                    .vertical()
+                                    .fill(body_color)
+                            );
+                        }
+                        
+                        let hl_chart = BarChart::new(high_low_bars).name("High-Low");
+                        let body_chart = BarChart::new(body_bars).name("Body");
                         
                         Plot::new("candlestick_chart")
                             .view_aspect(2.0)
+                            .legend(egui_plot::Legend::default())
                             .show(ui, |plot_ui| {
-                                plot_ui.bar_chart(candle_chart);
+                                plot_ui.bar_chart(hl_chart);
+                                plot_ui.bar_chart(body_chart);
                             });
                         
                         // Render volume bars below price chart

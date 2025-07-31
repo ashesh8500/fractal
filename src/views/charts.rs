@@ -3,7 +3,8 @@
 use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use egui_plot::{Line, Plot, Points};
+use egui_plot::{Line, Plot, PlotPoints};
+use crate::portfolio::indicators::{sma, ema, rsi, macd, bollinger_bands};
 
 pub struct ChartsComponent {
     is_open: bool,
@@ -70,12 +71,48 @@ impl PortfolioComponent for ChartsComponent {
                         .map(|(i, point)| [i as f64, point.close])
                         .collect();
                     
-                    let line = Line::new(closes);
+                    let close_prices: Vec<f64> = price_history.iter().map(|p| p.close).collect();
+                    
+                    let price_line = Line::new(PlotPoints::from(closes))
+                        .color(egui::Color32::BLUE)
+                        .name("Price");
+                    
+                    // Add technical indicators
+                    let mut lines = vec![price_line];
+                    
+                    // SMA 20
+                    if close_prices.len() >= 20 {
+                        let sma_20 = sma(&close_prices, 20);
+                        let sma_points: Vec<[f64; 2]> = sma_20.iter()
+                            .enumerate()
+                            .map(|(i, &value)| [(i + 19) as f64, value])
+                            .collect();
+                        
+                        lines.push(Line::new(PlotPoints::from(sma_points))
+                            .color(egui::Color32::RED)
+                            .name("SMA 20"));
+                    }
+                    
+                    // EMA 12
+                    if close_prices.len() >= 12 {
+                        let ema_12 = ema(&close_prices, 12);
+                        let ema_points: Vec<[f64; 2]> = ema_12.iter()
+                            .enumerate()
+                            .map(|(i, &value)| [(i + 11) as f64, value])
+                            .collect();
+                        
+                        lines.push(Line::new(PlotPoints::from(ema_points))
+                            .color(egui::Color32::GREEN)
+                            .name("EMA 12"));
+                    }
                     
                     Plot::new("price_chart")
                         .view_aspect(2.0)
+                        .legend(egui_plot::Legend::default())
                         .show(ui, |plot_ui| {
-                            plot_ui.line(line);
+                            for line in lines {
+                                plot_ui.line(line);
+                            }
                         });
                     
                     // Render volume bars
@@ -87,13 +124,58 @@ impl PortfolioComponent for ChartsComponent {
                         .map(|(i, point)| [i as f64, point.volume as f64])
                         .collect();
                     
-                    let volume_points = Points::new(volumes);
+                    let volume_line = Line::new(PlotPoints::from(volumes))
+                        .color(egui::Color32::GRAY)
+                        .name("Volume");
                     
                     Plot::new("volume_chart")
                         .view_aspect(2.0)
                         .show(ui, |plot_ui| {
-                            plot_ui.points(volume_points);
+                            plot_ui.line(volume_line);
                         });
+                    
+                    // RSI Chart
+                    if close_prices.len() >= 15 {
+                        ui.separator();
+                        ui.heading("RSI (14)");
+                        
+                        let rsi_values = rsi(&close_prices, 14);
+                        let rsi_points: Vec<[f64; 2]> = rsi_values.iter()
+                            .enumerate()
+                            .map(|(i, &value)| [(i + 14) as f64, value])
+                            .collect();
+                        
+                        let rsi_line = Line::new(PlotPoints::from(rsi_points))
+                            .color(egui::Color32::YELLOW)
+                            .name("RSI");
+                        
+                        // Add overbought/oversold lines
+                        let overbought: Vec<[f64; 2]> = (0..rsi_values.len())
+                            .map(|i| [(i + 14) as f64, 70.0])
+                            .collect();
+                        let oversold: Vec<[f64; 2]> = (0..rsi_values.len())
+                            .map(|i| [(i + 14) as f64, 30.0])
+                            .collect();
+                        
+                        let overbought_line = Line::new(PlotPoints::from(overbought))
+                            .color(egui::Color32::RED)
+                            .style(egui_plot::LineStyle::Dashed { length: 5.0 })
+                            .name("Overbought (70)");
+                        
+                        let oversold_line = Line::new(PlotPoints::from(oversold))
+                            .color(egui::Color32::GREEN)
+                            .style(egui_plot::LineStyle::Dashed { length: 5.0 })
+                            .name("Oversold (30)");
+                        
+                        Plot::new("rsi_chart")
+                            .view_aspect(2.0)
+                            .legend(egui_plot::Legend::default())
+                            .show(ui, |plot_ui| {
+                                plot_ui.line(rsi_line);
+                                plot_ui.line(overbought_line);
+                                plot_ui.line(oversold_line);
+                            });
+                    }
                 }
                 
                 // Technical indicators section

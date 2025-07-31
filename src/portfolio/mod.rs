@@ -10,8 +10,10 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 pub mod types;
+pub mod indicators;
 
 pub use types::*;
+pub use indicators::*;
 
 /// Central Portfolio data structure that holds all state for UI components
 #[derive(Debug, Clone, Serialize, Deserialize)]

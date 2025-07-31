@@ -30,6 +30,46 @@ pub struct PricePoint {
     pub volume: u64,
 }
 
+/// Enhanced OHLCV bar with additional computed fields
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OhlcvBar {
+    pub timestamp: DateTime<Utc>,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: u64,
+    pub adj_close: Option<f64>,
+    pub typical_price: f64,  // (H + L + C) / 3
+    pub price_change: f64,   // Close - Open
+    pub price_change_pct: f64, // (Close - Open) / Open * 100
+}
+
+impl From<PricePoint> for OhlcvBar {
+    fn from(point: PricePoint) -> Self {
+        let typical_price = (point.high + point.low + point.close) / 3.0;
+        let price_change = point.close - point.open;
+        let price_change_pct = if point.open != 0.0 {
+            (price_change / point.open) * 100.0
+        } else {
+            0.0
+        };
+        
+        Self {
+            timestamp: point.timestamp,
+            open: point.open,
+            high: point.high,
+            low: point.low,
+            close: point.close,
+            volume: point.volume,
+            adj_close: None,
+            typical_price,
+            price_change,
+            price_change_pct,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BacktestResult {
     pub strategy_name: String,
