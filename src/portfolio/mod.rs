@@ -20,9 +20,17 @@ pub struct Portfolio {
     pub holdings: HashMap<String, f64>,
     pub total_value: f64,
     pub current_weights: HashMap<String, f64>,
+    
+    #[serde(default)]
     pub risk_metrics: RiskMetrics,
+    
+    #[serde(default)]
     pub performance_metrics: PerformanceMetrics,
+    
+    #[serde(default = "default_data_provider")]
     pub data_provider: String,
+    
+    #[serde(default = "Utc::now")]
     pub last_updated: DateTime<Utc>,
     
     // Extended state for UI components
@@ -39,6 +47,10 @@ pub struct Portfolio {
     pub data_status: Option<DataStatus>,
 }
 
+fn default_data_provider() -> String {
+    "yfinance".to_string()
+}
+
 impl Portfolio {
     /// Create a new empty portfolio
     pub fn new(name: String) -> Self {
@@ -49,7 +61,7 @@ impl Portfolio {
             current_weights: HashMap::new(),
             risk_metrics: RiskMetrics::default(),
             performance_metrics: PerformanceMetrics::default(),
-            data_provider: "yfinance".to_string(),
+            data_provider: default_data_provider(),
             last_updated: Utc::now(),
             price_history: None,
             backtest_results: None,

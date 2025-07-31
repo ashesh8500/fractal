@@ -24,6 +24,22 @@ class PortfolioCreate(BaseModel):
         return v
 
 
+class RiskMetrics(BaseModel):
+    """Schema for risk metrics."""
+    volatility: float = 0.0
+    sharpe_ratio: float = 0.0
+    max_drawdown: float = 0.0
+    var_95: float = 0.0
+
+
+class PerformanceMetrics(BaseModel):
+    """Schema for performance metrics."""
+    total_return: float = 0.0
+    annualized_return: float = 0.0
+    alpha: float = 0.0
+    beta: float = 0.0
+
+
 class PortfolioResponse(BaseModel):
     """Schema for portfolio API responses."""
     name: str
@@ -31,6 +47,9 @@ class PortfolioResponse(BaseModel):
     total_value: float
     current_weights: Dict[str, float]
     created_at: datetime
+    risk_metrics: RiskMetrics
+    performance_metrics: PerformanceMetrics
+    data_provider: str = "yfinance"
     
     class Config:
         from_attributes = True
