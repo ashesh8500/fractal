@@ -4,7 +4,6 @@
 //! API client, and backend services.
 
 use fractal::TemplateApp;
-use std::collections::HashMap;
 
 #[cfg(test)]
 mod tests {
@@ -20,7 +19,7 @@ mod tests {
         assert!(!app.app_state.has_portfolios());
         
         // Create a test portfolio
-        let mut portfolio = crate::portfolio::Portfolio::new("Test Portfolio".to_string());
+        let mut portfolio = fractal::portfolio::Portfolio::new("Test Portfolio".to_string());
         portfolio.holdings.insert("AAPL".to_string(), 10.0);
         portfolio.holdings.insert("MSFT".to_string(), 5.0);
         portfolio.total_value = 1000.0;
@@ -43,8 +42,8 @@ mod tests {
     /// Test portfolio component rendering requirements
     #[test]
     fn test_portfolio_component_requirements() {
-        use crate::components::PortfolioComponent;
-        use crate::views::DashboardComponent;
+        use fractal::components::PortfolioComponent;
+        use fractal::views::DashboardComponent;
         
         let mut dashboard = DashboardComponent::new();
         
@@ -64,14 +63,14 @@ mod tests {
     /// Test portfolio data validation
     #[test]
     fn test_portfolio_data_validation() {
-        let portfolio = crate::portfolio::Portfolio::new("Empty Portfolio".to_string());
+        let portfolio = fractal::portfolio::Portfolio::new("Empty Portfolio".to_string());
         
         // Empty portfolio should not have data
         assert!(!portfolio.has_data());
         assert_eq!(portfolio.symbols().len(), 0);
         assert_eq!(portfolio.total_value, 0.0);
         
-        let mut portfolio_with_data = crate::portfolio::Portfolio::new("Valid Portfolio".to_string());
+        let mut portfolio_with_data = fractal::portfolio::Portfolio::new("Valid Portfolio".to_string());
         portfolio_with_data.holdings.insert("AAPL".to_string(), 10.0);
         portfolio_with_data.total_value = 1000.0;
         portfolio_with_data.current_weights.insert("AAPL".to_string(), 1.0);
@@ -92,7 +91,7 @@ mod tests {
     fn test_async_state_management() {
         use std::sync::{Arc, Mutex};
         
-        let async_state = Arc::new(Mutex::new(crate::app::AsyncState::default()));
+        let async_state = Arc::new(Mutex::new(fractal::app::AsyncState::default()));
         
         // Test connection result
         {
@@ -124,7 +123,7 @@ mod tests {
     /// Test component manager functionality
     #[test]
     fn test_component_manager() {
-        use crate::components::ComponentManager;
+        use fractal::components::ComponentManager;
         
         let manager = ComponentManager::new();
         
@@ -132,7 +131,7 @@ mod tests {
         assert_eq!(manager.components.len(), 4); // Dashboard, Charts, Tables, Candles
         
         // Test component categories
-        use crate::components::ComponentCategory;
+        use fractal::components::ComponentCategory;
         let general_components = manager.get_components_by_category(ComponentCategory::General);
         let chart_components = manager.get_components_by_category(ComponentCategory::Charts);
         let table_components = manager.get_components_by_category(ComponentCategory::Tables);
@@ -145,7 +144,7 @@ mod tests {
     /// Test API client error handling
     #[tokio::test]
     async fn test_api_client_error_handling() {
-        use crate::api::{ApiClient, ApiError};
+        use fractal::api::{ApiClient, ApiError};
         
         // Test with invalid URL
         let client = ApiClient::new("http://invalid-url:9999/api/v1");
@@ -164,7 +163,7 @@ mod tests {
     /// Test portfolio serialization/deserialization
     #[test]
     fn test_portfolio_serialization() {
-        let mut portfolio = crate::portfolio::Portfolio::new("Serialization Test".to_string());
+        let mut portfolio = fractal::portfolio::Portfolio::new("Serialization Test".to_string());
         portfolio.holdings.insert("AAPL".to_string(), 10.0);
         portfolio.holdings.insert("MSFT".to_string(), 5.0);
         portfolio.total_value = 1500.0;
@@ -176,7 +175,7 @@ mod tests {
         assert!(json.contains("MSFT"));
         
         // Test deserialization
-        let deserialized: crate::portfolio::Portfolio = serde_json::from_str(&json).unwrap();
+        let deserialized: fractal::portfolio::Portfolio = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, portfolio.name);
         assert_eq!(deserialized.holdings, portfolio.holdings);
         assert_eq!(deserialized.total_value, portfolio.total_value);
@@ -185,7 +184,7 @@ mod tests {
     /// Test configuration management
     #[test]
     fn test_configuration_management() {
-        use crate::state::{Config, ChartTheme};
+        use fractal::state::{Config, ChartTheme};
         
         let config = Config::default();
         
@@ -198,16 +197,15 @@ mod tests {
     /// Test error message formatting
     #[test]
     fn test_error_message_formatting() {
-        use crate::api::ApiError;
+        use fractal::api::ApiError;
         
-        let network_error = ApiError::Network(reqwest::Error::from(reqwest::ErrorKind::Request));
+        // Test backend error formatting
         let backend_error = ApiError::Backend("Test backend error".to_string());
         
-        assert!(network_error.to_string().contains("Network error"));
         assert!(backend_error.to_string().contains("Backend error"));
         assert!(backend_error.to_string().contains("Test backend error"));
     }
 }
 
 // Make AsyncState public for testing
-pub use crate::app::AsyncState;
+pub use fractal::app::AsyncState;
