@@ -4,7 +4,7 @@ use crate::components::{PortfolioComponent, ComponentCategory};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
 use egui_plot::{Line, Plot, PlotPoints};
-use crate::portfolio::indicators::{sma, ema, rsi, macd, bollinger_bands};
+use crate::portfolio::indicators::{sma, ema, rsi};
 
 pub struct ChartsComponent {
     is_open: bool,
