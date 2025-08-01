@@ -432,15 +432,15 @@ impl eframe::App for TemplateApp {
                 ui.menu_button("Portfolio", |ui| {
                     if ui.button("Toggle Portfolio Panel").clicked() {
                         self.show_portfolio_panel = !self.show_portfolio_panel;
-                        ui.close();
+                        ui.close_menu();
                     }
                     if ui.button("Test Backend").clicked() {
                         self.test_backend_connection(ctx);
-                        ui.close();
+                        ui.close_menu();
                     }
                     if ui.button("Load Portfolios").clicked() {
                         self.load_portfolios(ctx);
-                        ui.close();
+                        ui.close_menu();
                     }
                 });
 
