@@ -12,70 +12,49 @@ targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
 egui = "0.31"
-egui_plot = "0.31"  # For plotting functionality
-egui_extras = { version = "0.31", features = ["image"] } # tables, strip, image loaders
+egui_plot = "0.31"
+egui_extras = { version = "0.31", features = ["image"] }
 eframe = { version = "0.31", default-features = false, features = [
-    "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
-    "default_fonts", # Embed the default egui fonts.
-    "glow",          # Use the glow rendering backend. Alternative: "wgpu".
-    "persistence",   # Enable restoring app state when restarting the app.
-    "wayland",       # To support Linux (and CI)
-    "x11",           # To support older Linux distributions (restores one of the default features)
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "persistence",
+    "wayland",
+    "x11",
 ] }
 log = "0.4.27"
-
-# You only need serde if you want app persistence:
 serde = { version = "1.0.219", features = ["derive"] }
-
-# Phase 3: Portfolio functionality and API communication
-serde_json = "1.0"     # For API JSON serialization/deserialization
-chrono = { version = "0.4", features = ["serde"] }  # Date/time handling for financial data
-
-[dev-dependencies]
-tokio-test = "0.4"     # For async testing
-url = "2.5"           # For URL parsing in tests
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+urlencoding = "2.1"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11.8"
-reqwest = { version = "0.11", features = ["json"] }  # HTTP client for API calls
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }  # Async runtime
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.50"
-web-sys = "0.3.70"              # to access the DOM (to hide the loading text)
-reqwest = { version = "0.11", features = ["json", "wasm-streams"] }  # WASM-compatible HTTP client
-tokio = { version = "1.0", features = ["macros", "rt"] }  # WASM-compatible async runtime (no multi-thread)
+web-sys = "0.3.70"
+reqwest = { version = "0.11", features = ["json", "wasm-streams"] }
+tokio = { version = "1.0", features = ["macros", "rt"] }
 
 [profile.release]
-opt-level = 2 # fast and small wasm
+opt-level = 2
 
-# Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
 opt-level = 2
 
-
 [patch.crates-io]
-
-# If you want to use the bleeding edge version of egui and eframe:
-# egui = { git = "https://github.com/emilk/egui", branch = "main" }
-# eframe = { git = "https://github.com/emilk/egui", branch = "main" }
-
-# If you fork https://github.com/emilk/egui you can test with:
-# egui = { path = "../egui/crates/egui" }
-# eframe = { path = "../egui/crates/eframe" }
-
-
-# ----------------------------------------------------------------------------------------
-# Lints:
 
 [lints]
 workspace = true
 
 [workspace.lints.rust]
 unsafe_code = "deny"
-
 elided_lifetimes_in_paths = "warn"
 future_incompatible = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
@@ -83,19 +62,16 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 rust_2021_prelude_collisions = "warn"
 semicolon_in_expressions_from_macros = "warn"
 trivial_numeric_casts = "warn"
-unsafe_op_in_unsafe_fn = "warn"                         # `unsafe_op_in_unsafe_fn` may become the default in future Rust versions: https://github.com/rust-lang/rust/issues/71668
+unsafe_op_in_unsafe_fn = "warn"
 unused_extern_crates = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
-
 trivial_casts = "allow"
 unused_qualifications = "allow"
-
 
 [workspace.lints.rustdoc]
 all = "warn"
 missing_crate_level_docs = "warn"
-
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
@@ -109,11 +85,11 @@ cloned_instead_of_copied = "warn"
 dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 derive_partial_eq_without_eq = "warn"
-disallowed_macros = "warn"                   # See clippy.toml
-disallowed_methods = "warn"                  # See clippy.toml
-disallowed_names = "warn"                    # See clippy.toml
-disallowed_script_idents = "warn"            # See clippy.toml
-disallowed_types = "warn"                    # See clippy.toml
+disallowed_macros = "warn"
+disallowed_methods = "warn"
+disallowed_names = "warn"
+disallowed_script_idents = "warn"
+disallowed_types = "warn"
 doc_include_without_cfg = "warn"
 doc_link_with_quotes = "warn"
 doc_markdown = "warn"
@@ -248,6 +224,5 @@ verbose_file_reads = "warn"
 wildcard_dependencies = "warn"
 wildcard_imports = "warn"
 zero_sized_map_values = "warn"
-
-manual_range_contains = "allow" # this is better on 'allow'
-map_unwrap_or = "allow"         # this is better on 'allow'
+manual_range_contains = "allow"
+map_unwrap_or = "allow"

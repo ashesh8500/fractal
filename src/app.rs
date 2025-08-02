@@ -109,7 +109,9 @@ impl TemplateApp {
         };
 
         // Initialize non-serializable components
-        app.api_client = ApiClient::new("http://localhost:8000/api/v1");
+        let use_native = app.app_state.config.use_native_provider;
+        let key = app.app_state.config.alphavantage_api_key.clone();
+        app.api_client = ApiClient::new(&app.app_state.config.api_base_url).with_native(use_native, key);
         app.component_manager = ComponentManager::new();
         app.connection_status = ConnectionStatus::Disconnected;
         app.async_state = Arc::new(Mutex::new(AsyncState::default()));
@@ -126,7 +128,11 @@ impl TemplateApp {
         }
 
         self.connection_status = ConnectionStatus::Connecting;
-        self.test_message = "Testing connection...".to_string();
+        self.test_message = if self.app_state.config.use_native_provider {
+            "Testing native provider...".to_string()
+        } else {
+            "Testing backend connection...".to_string()
+        };
 
         let api_client = self.api_client.clone();
         let ctx = ctx.clone();
@@ -138,16 +144,15 @@ impl TemplateApp {
             wasm_bindgen_futures::spawn_local(async move {
                 let result = match api_client.test_health().await {
                     Ok(_) => {
-                        log::info!("Backend connection successful");
+                        log::info!("Health check successful");
                         Ok(())
                     }
                     Err(e) => {
-                        log::error!("Backend connection failed: {}", e);
+                        log::error!("Health check failed: {}", e);
                         Err(e.to_string())
                     }
                 };
 
-                // Update shared state
                 if let Ok(mut state) = async_state.lock() {
                     state.connection_result = Some(result);
                 }
@@ -164,16 +169,15 @@ impl TemplateApp {
                 rt.block_on(async move {
                     let result = match api_client.test_health().await {
                         Ok(_) => {
-                            log::info!("Backend connection successful");
+                            log::info!("Health check successful");
                             Ok(())
                         }
                         Err(e) => {
-                            log::error!("Backend connection failed: {}", e);
+                            log::error!("Health check failed: {}", e);
                             Err(e.to_string())
                         }
                     };
 
-                    // Update shared state
                     if let Ok(mut state) = async_state.lock() {
                         state.connection_result = Some(result);
                     }
@@ -190,21 +194,19 @@ impl TemplateApp {
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
 
-        // Use WASM-compatible async execution
+        // WASM
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                // Prepare holdings map with explicit types so inference is unambiguous on wasm:
                 let mut holdings: std::collections::HashMap<String, f64> =
                     std::collections::HashMap::new();
-                // Example placeholder fill; in wasm we might call an API later:
                 holdings.insert("AAPL".to_string(), 10.0);
                 holdings.insert("MSFT".to_string(), 5.0);
-                let _ = holdings; // avoid unused warning for now
+                let _ = holdings;
             });
         }
 
-        // Use thread for native
+        // Native
         #[cfg(not(target_arch = "wasm32"))]
         {
             std::thread::spawn(move || {
@@ -216,7 +218,6 @@ impl TemplateApp {
                     holdings.insert("MSFT".to_string(), 5.0);
                     holdings.insert("GOOGL".to_string(), 3.0);
 
-                    // Create unique portfolio name with timestamp
                     let timestamp = chrono::Utc::now().format("%H%M%S");
                     let portfolio_name = format!("Test Portfolio {}", timestamp);
 
@@ -232,7 +233,6 @@ impl TemplateApp {
                             }
                         };
 
-                    // Update shared state
                     if let Ok(mut state) = async_state.lock() {
                         state.portfolio_result = Some(result);
                     }
@@ -243,13 +243,13 @@ impl TemplateApp {
         }
     }
 
-    /// Load portfolios from backend
+    /// Load portfolios from backend or native (currently backend only returns actual list)
     fn load_portfolios(&mut self, ctx: &egui::Context) {
         let api_client = self.api_client.clone();
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
 
-        // Use WASM-compatible async execution
+        // WASM
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
@@ -264,7 +264,6 @@ impl TemplateApp {
                     }
                 };
 
-                // Update shared state
                 if let Ok(mut state) = async_state.lock() {
                     state.portfolios_result = Some(result);
                 }
@@ -273,7 +272,7 @@ impl TemplateApp {
             });
         }
 
-        // Use thread for native
+        // Native
         #[cfg(not(target_arch = "wasm32"))]
         {
             std::thread::spawn(move || {
@@ -290,7 +289,6 @@ impl TemplateApp {
                         }
                     };
 
-                    // Update shared state
                     if let Ok(mut state) = async_state.lock() {
                         state.portfolios_result = Some(result);
                     }
@@ -320,8 +318,8 @@ impl TemplateApp {
         let symbols: Vec<String> = {
             let mut out = Vec::new();
             if let Ok(mut queue) = self.fetch_queue.lock() {
-                // fetch up to N per batch to avoid overwhelming backend
-                let batch = 10usize.min(queue.len());
+                let batch = if self.app_state.config.use_native_provider { 5 } else { 10 };
+                let batch = batch.min(queue.len());
                 for _ in 0..batch {
                     if let Some(s) = queue.pop() {
                         out.push(s);
@@ -339,18 +337,16 @@ impl TemplateApp {
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
 
-        // heuristic date range: last 365 days
         let end_date = chrono::Utc::now().date_naive();
         let start_date = end_date
-            .checked_sub_days(chrono::Days::new(365))
+            .checked_sub_days(chrono::Days::new(200))
             .unwrap_or(end_date);
 
-        // WASM
         #[cfg(target_arch = "wasm32")]
         {
             let symbols_clone = symbols.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let mut map: HashMap<String, Vec<crate::portfolio::PricePoint>> = HashMap::new();
+                let mut map: std::collections::HashMap<String, Vec<crate::portfolio::PricePoint>> = std::collections::HashMap::new();
                 match api_client
                     .get_historic_prices(
                         &symbols_clone,
@@ -383,14 +379,13 @@ impl TemplateApp {
             });
         }
 
-        // Native
         #[cfg(not(target_arch = "wasm32"))]
         {
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
-                    let mut map: HashMap<String, Vec<crate::portfolio::PricePoint>> =
-                        HashMap::new();
+                    let mut map: std::collections::HashMap<String, Vec<crate::portfolio::PricePoint>> =
+                        std::collections::HashMap::new();
                     match api_client
                         .get_historic_prices(
                             &symbols,
@@ -450,7 +445,7 @@ impl TemplateApp {
 
                 // Controls
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Test Backend Connection").clicked() {
+                    if ui.button(if self.app_state.config.use_native_provider { "Test Native" } else { "Test Backend Connection" }).clicked() {
                         self.test_backend_connection(ctx);
                     }
                     if ui.button("Create Test Portfolio").clicked() {
@@ -458,6 +453,14 @@ impl TemplateApp {
                     }
                     if ui.button("Refresh Portfolios").clicked() {
                         self.load_portfolios(ctx);
+                    }
+                    if ui.button("Toggle Provider Mode").clicked() {
+                        self.app_state.config.use_native_provider = !self.app_state.config.use_native_provider;
+                        // Rebuild api client
+                        let key = self.app_state.config.alphavantage_api_key.clone();
+                        self.api_client = ApiClient::new(&self.app_state.config.api_base_url)
+                            .with_native(self.app_state.config.use_native_provider, key);
+                        self.connection_status = ConnectionStatus::Disconnected;
                     }
                 });
 
@@ -490,7 +493,6 @@ impl TemplateApp {
                             shown, total
                         ));
                         if ui.button("Show more").clicked() {
-                            // increase limit in steps
                             self.panel_render_limit =
                                 (self.panel_render_limit + 50).min(total.max(50));
                         }
@@ -509,12 +511,15 @@ impl TemplateApp {
         let mut should_load_portfolios = false;
 
         if let Ok(mut state) = self.async_state.lock() {
-            // Check connection result
             if let Some(result) = state.connection_result.take() {
                 match result {
                     Ok(_) => {
                         self.connection_status = ConnectionStatus::Connected;
-                        self.test_message = "Connection successful!".to_string();
+                        self.test_message = if self.app_state.config.use_native_provider {
+                            "Native provider ready!".to_string()
+                        } else {
+                            "Connection successful!".to_string()
+                        };
                     }
                     Err(e) => {
                         self.connection_status = ConnectionStatus::Error(e.clone());
@@ -523,7 +528,6 @@ impl TemplateApp {
                 }
             }
 
-            // Check portfolio creation result
             if let Some(result) = state.portfolio_result.take() {
                 match result {
                     Ok(name) => {
@@ -531,7 +535,6 @@ impl TemplateApp {
                             "Portfolio '{}' created successfully! Loading portfolios...",
                             name
                         );
-                        // Signal to load portfolios after releasing the lock
                         should_load_portfolios = true;
                     }
                     Err(e) => {
@@ -540,16 +543,13 @@ impl TemplateApp {
                 }
             }
 
-            // Check portfolios loading result
             if let Some(result) = state.portfolios_result.take() {
                 match result {
                     Ok(portfolios) => {
-                        // Update app state with loaded portfolios
                         let mut portfolio_map = std::collections::HashMap::new();
                         for mut portfolio in portfolios {
-                            // Ensure price_history map exists before we start feeding it:
                             if portfolio.price_history.is_none() {
-                                portfolio.price_history = Some(HashMap::new());
+                                portfolio.price_history = Some(std::collections::HashMap::new());
                             }
                             portfolio_map.insert(portfolio.name.clone(), portfolio);
                         }
@@ -565,13 +565,12 @@ impl TemplateApp {
                 }
             }
 
-            // Apply any finished price history results to selected portfolio
             if !state.price_history_results.is_empty() {
                 if let Some(selected_name) = &self.selected_portfolio {
                     if let Some(portfolios) = &mut self.app_state.portfolios {
                         if let Some(portfolio) = portfolios.get_mut(selected_name) {
                             if portfolio.price_history.is_none() {
-                                portfolio.price_history = Some(HashMap::new());
+                                portfolio.price_history = Some(std::collections::HashMap::new());
                             }
                             if let Some(price_map) = portfolio.price_history.as_mut() {
                                 for (symbol, res) in state.price_history_results.drain(..) {
@@ -588,18 +587,15 @@ impl TemplateApp {
                         }
                     }
                 } else {
-                    // No selected portfolio, just drain results
                     state.price_history_results.clear();
                 }
             }
         }
 
-        // Load portfolios after releasing the lock
         if should_load_portfolios {
             self.load_portfolios(ctx);
         }
 
-        // If we have items queued for price history fetch, start a batch now:
         self.drain_and_fetch_price_history(ctx);
     }
 
@@ -607,7 +603,6 @@ impl TemplateApp {
     fn render_portfolio_components(&mut self, ui: &mut egui::Ui) {
         if let Some(portfolio_name) = &self.selected_portfolio {
             if let Some(portfolio) = self.app_state.get_portfolio(portfolio_name) {
-                // Render all components with the selected portfolio
                 self.component_manager
                     .render_all(ui, portfolio, &self.app_state.config);
             } else {
@@ -620,36 +615,31 @@ impl TemplateApp {
 }
 
 impl eframe::App for TemplateApp {
-    /// Called by the framework to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
-    /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check for async operation results and kick background fetches
         self.check_async_results(ctx);
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // NOTE: no File->Quit on web pages!
                 let is_web = cfg!(target_arch = "wasm32");
                 if !is_web {
                     ui.menu_button("File", |ui| {
                         if ui.button("Quit").clicked() {
-                            ctx.request_repaint(); // Placeholder for viewport close command
+                            ctx.request_repaint();
                         }
                     });
                     ui.add_space(16.0);
                 }
 
-                // Portfolio menu
                 ui.menu_button("Portfolio", |ui| {
                     if ui.button("Toggle Portfolio Panel").clicked() {
                         self.show_portfolio_panel = !self.show_portfolio_panel;
                         ui.close_menu();
                     }
-                    if ui.button("Test Backend").clicked() {
+                    if ui.button(if self.app_state.config.use_native_provider { "Test Native" } else { "Test Backend" }).clicked() {
                         self.test_backend_connection(ctx);
                         ui.close_menu();
                     }
@@ -657,11 +647,18 @@ impl eframe::App for TemplateApp {
                         self.load_portfolios(ctx);
                         ui.close_menu();
                     }
+                    if ui.button("Toggle Provider Mode").clicked() {
+                        self.app_state.config.use_native_provider = !self.app_state.config.use_native_provider;
+                        let key = self.app_state.config.alphavantage_api_key.clone();
+                        self.api_client = ApiClient::new(&self.app_state.config.api_base_url)
+                            .with_native(self.app_state.config.use_native_provider, key);
+                        self.connection_status = ConnectionStatus::Disconnected;
+                        ui.close_menu();
+                    }
                 });
 
                 ui.separator();
 
-                // Fetch prices for selected portfolio symbols
                 if ui.button("Fetch Price History").clicked() {
                     if let Some(selected) = &self.selected_portfolio {
                         if let Some(pmap) = self
@@ -681,10 +678,8 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        // Render portfolio UI panels (left)
         self.render_portfolio_ui(ctx);
 
-        // Optional small status window inspired by demo windows
         if self.show_status_window {
             egui::Window::new("Status")
                 .resizable(false)
@@ -710,13 +705,9 @@ impl eframe::App for TemplateApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding panels
-
-            // Show original template content if no portfolio is selected
             if self.selected_portfolio.is_none() {
                 ui.heading("Portfolio Management System");
 
-                // Connection status display
                 ui.horizontal(|ui| {
                     let (color, text) = match &self.connection_status {
                         ConnectionStatus::Disconnected => {
@@ -735,9 +726,8 @@ impl eframe::App for TemplateApp {
 
                 ui.separator();
 
-                // Test buttons
                 ui.horizontal(|ui| {
-                    if ui.button("Test Backend Connection").clicked() {
+                    if ui.button(if self.app_state.config.use_native_provider { "Test Native" } else { "Test Backend Connection" }).clicked() {
                         self.test_backend_connection(ctx);
                     }
                     if ui.button("Create Test Portfolio").clicked() {
@@ -747,7 +737,6 @@ impl eframe::App for TemplateApp {
 
                 ui.separator();
 
-                // Original template content
                 ui.horizontal(|ui| {
                     ui.label("Write something: ");
                     ui.text_edit_singleline(&mut self.label);
@@ -770,7 +759,6 @@ impl eframe::App for TemplateApp {
                     "Original template source code."
                 ));
             } else {
-                // Render portfolio components
                 self.render_portfolio_components(ui);
             }
 
