@@ -50,7 +50,15 @@ impl PortfolioComponent for TablesComponent {
                 .column(Column::remainder())
                 .min_scrolled_height(0.0)
                 .body(|mut body| {
-                    let text_height = egui::TextStyle::Body.resolve(ui.style()).size.max(ui.spacing().interact_size.y);
+                    // Capture style-derived values BEFORE using `body` to avoid borrowing `ui` again inside the closure:
+                    let text_height = {
+                        let style = body.ui().style(); // get style from the table body context
+                        egui::TextStyle::Body
+                            .resolve(style)
+                            .size
+                            .max(body.ui().spacing().interact_size.y)
+                    };
+
                     // Header
                     body.row(22.0, |mut row| {
                         row.col(|ui| { ui.strong("Symbol"); });
