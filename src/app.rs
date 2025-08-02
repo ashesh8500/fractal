@@ -179,8 +179,12 @@ impl TemplateApp {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                let mut holdings = std::collections::HashMap::new;
-                let _ = &holdings; // keep lint happy if platform gated; actual fill below happens in native branch too
+                // Prepare holdings map with explicit types so inference is unambiguous on wasm:
+                let mut holdings: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+                // Example placeholder fill; in wasm we might call an API later:
+                holdings.insert("AAPL".to_string(), 10.0);
+                holdings.insert("MSFT".to_string(), 5.0);
+                let _ = holdings; // avoid unused warning for now
             });
         }
         
@@ -190,7 +194,7 @@ impl TemplateApp {
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
-                    let mut holdings = std::collections::HashMap::new();
+                    let mut holdings: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
                     holdings.insert("AAPL".to_string(), 10.0);
                     holdings.insert("MSFT".to_string(), 5.0);
                     holdings.insert("GOOGL".to_string(), 3.0);
