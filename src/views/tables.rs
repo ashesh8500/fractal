@@ -25,8 +25,34 @@ impl TablesComponent {
 }
 
 impl PortfolioComponent for TablesComponent {
-    fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, _config: &Config) {
+    fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, config: &Config) {
         ui.heading("Data Tables");
+
+        // Provider status header
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                let mode = if config.use_native_provider {
+                    "Native (Alpha Vantage)"
+                } else {
+                    "Backend"
+                };
+                ui.strong("Provider Mode:");
+                ui.label(mode);
+
+                ui.separator();
+
+                if config.use_native_provider {
+                    let key_status = if config.alphavantage_api_key.as_deref().unwrap_or("").is_empty() {
+                        ("API key: MISSING", egui::Color32::RED)
+                    } else {
+                        ("API key: OK", egui::Color32::GREEN)
+                    };
+                    ui.colored_label(key_status.1, key_status.0);
+                }
+            });
+        });
+        
+        ui.separator();
         
         // Table selection
         ui.horizontal(|ui| {
