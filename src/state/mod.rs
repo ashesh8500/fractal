@@ -1,3 +1,4 @@
+#![allow(elided_lifetimes_in_paths)]
 //! Application state management
 //! 
 //! Centralized state management with Portfolio as the primary data holder.
@@ -20,6 +21,9 @@ pub struct Config {
     pub default_data_provider: String,
     pub refresh_interval_seconds: u64,
     pub chart_theme: ChartTheme,
+    // Native provider support
+    pub use_native_provider: bool,
+    pub alphavantage_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +56,9 @@ impl Default for Config {
             default_data_provider: "yfinance".to_string(),
             refresh_interval_seconds: 300, // 5 minutes
             chart_theme: ChartTheme::Auto,
+            // Defaults for native mode
+            use_native_provider: false,
+            alphavantage_api_key: std::env::var("ALPHAVANTAGE_API_KEY").ok(),
         }
     }
 }
