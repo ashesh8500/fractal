@@ -113,9 +113,8 @@ impl TemplateApp {
         app.component_manager = ComponentManager::new();
         app.connection_status = ConnectionStatus::Disconnected;
         app.async_state = Arc::new(Mutex::new(AsyncState::default()));
-        if app.fetch_queue.is_none() {
-            app.fetch_queue = Arc::new(Mutex::new(Vec::new()));
-        }
+        // fetch_queue is not an Option; it is always present. Ensure it is initialized.
+        app.fetch_queue = Arc::new(Mutex::new(Vec::new()));
 
         app
     }
