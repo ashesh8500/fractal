@@ -243,6 +243,20 @@ impl TemplateApp {
         }
     }
 
+    /// Enqueue symbol list to fetch price history for (deduplicated)
+    pub fn enqueue_price_history_fetch(&mut self, symbols: &[String]) {
+        if symbols.is_empty() {
+            return;
+        }
+        if let Ok(mut queue) = self.fetch_queue.lock() {
+            for s in symbols {
+                if !queue.iter().any(|q| q == s) {
+                    queue.push(s.clone());
+                }
+            }
+        }
+    }
+
     /// Load portfolios from backend or native (currently backend only returns actual list)
     fn load_portfolios(&mut self, ctx: &egui::Context) {
         let api_client = self.api_client.clone();
@@ -299,20 +313,6 @@ impl TemplateApp {
         }
     }
 
-    /// Enqueue symbol list to fetch price history for (deduplicated)
-    pub fn enqueue_price_history_fetch(&mut self, symbols: &[String]) {
-        if symbols.is_empty() {
-            return;
-        }
-        if let Ok(mut queue) = self.fetch_queue.lock() {
-            for s in symbols {
-                if !queue.iter().any(|q| q == s) {
-                    queue.push(s.clone());
-                }
-            }
-        }
-    }
-
     /// Start background task to fetch price history for queued symbols, batched
     fn drain_and_fetch_price_history(&mut self, ctx: &egui::Context) {
         let symbols: Vec<String> = {
@@ -337,30 +337,31 @@ impl TemplateApp {
         let ctx = ctx.clone();
         let async_state = self.async_state.clone();
 
+        // Format dates robustly as YYYY-MM-DD
         let end_date = chrono::Utc::now().date_naive();
         let start_date = end_date
             .checked_sub_days(chrono::Days::new(200))
             .unwrap_or(end_date);
+        let start_s = start_date.format("%Y-%m-%d").to_string();
+        let end_s = end_date.format("%Y-%m-%d").to_string();
 
         #[cfg(target_arch = "wasm32")]
         {
             let symbols_clone = symbols.clone();
+            let start_s2 = start_s.clone();
+            let end_s2 = end_s.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let mut map: std::collections::HashMap<String, Vec<crate::portfolio::PricePoint>> = std::collections::HashMap::new();
                 match api_client
                     .get_historic_prices(
                         &symbols_clone,
-                        &start_date.to_string(),
-                        &end_date.to_string(),
+                        &start_s2,
+                        &end_s2,
                     )
                     .await
                 {
                     Ok(mut data) => {
-                        for (k, v) in data.drain() {
-                            map.insert(k, v);
-                        }
                         if let Ok(mut state) = async_state.lock() {
-                            for (sym, list) in map {
+                            for (sym, list) in data.drain() {
                                 state.price_history_results.push((sym, Ok(list)));
                             }
                         }
@@ -381,25 +382,22 @@ impl TemplateApp {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let start_s2 = start_s.clone();
+            let end_s2 = end_s.clone();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
-                    let mut map: std::collections::HashMap<String, Vec<crate::portfolio::PricePoint>> =
-                        std::collections::HashMap::new();
                     match api_client
                         .get_historic_prices(
                             &symbols,
-                            &start_date.to_string(),
-                            &end_date.to_string(),
+                            &start_s2,
+                            &end_s2,
                         )
                         .await
                     {
                         Ok(mut data) => {
-                            for (k, v) in data.drain() {
-                                map.insert(k, v);
-                            }
                             if let Ok(mut state) = async_state.lock() {
-                                for (sym, list) in map {
+                                for (sym, list) in data.drain() {
                                     state.price_history_results.push((sym, Ok(list)));
                                 }
                             }
@@ -417,6 +415,20 @@ impl TemplateApp {
                     ctx.request_repaint();
                 });
             });
+        }
+    }
+
+    /// Enqueue symbol list to fetch price history for (deduplicated)
+    pub fn enqueue_price_history_fetch(&mut self, symbols: &[String]) {
+        if symbols.is_empty() {
+            return;
+        }
+        if let Ok(mut queue) = self.fetch_queue.lock() {
+            for s in symbols {
+                if !queue.iter().any(|q| q == s) {
+                    queue.push(s.clone());
+                }
+            }
         }
     }
 

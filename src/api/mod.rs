@@ -20,7 +20,7 @@ impl ApiClient {
     pub fn new(base_url: &str) -> Self {
         Self {
             client: Client::new(),
-            base_url: base_url.to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             use_native_provider: false,
             alphavantage_api_key: None,
         }
@@ -44,10 +44,12 @@ impl ApiClient {
             if response.status().is_success() {
                 Ok(())
             } else {
-                Err(ApiError::Backend(format!(
-                    "Health check failed with status: {}",
-                    response.status()
-                )))
+                    let text = response.text().await.unwrap_or_default();
+                    Err(ApiError::Backend(format!(
+                        "Health check failed: status={}, body={}",
+                        response.status(),
+                        text
+                    )))
             }
         }
     }
@@ -64,8 +66,12 @@ impl ApiClient {
                 let portfolios: Vec<Portfolio> = response.json().await?;
                 Ok(portfolios)
             } else {
-                let error: Value = response.json().await?;
-                Err(ApiError::Backend(error.to_string()))
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Backend(format!(
+                    "get_portfolios failed: status={}, body={}",
+                    response.status(),
+                    text
+                )))
             }
         }
     }
@@ -77,15 +83,19 @@ impl ApiClient {
                 "Fetching portfolio by name is backend-only in this prototype".into(),
             ))
         } else {
-            let url = format!("{}/portfolios/{}", self.base_url, name);
+            let url = format!("{}/portfolios/{}", self.base_url, urlencoding::encode(name));
             let response = self.client.get(&url).send().await?;
             
             if response.status().is_success() {
                 let portfolio: Portfolio = response.json().await?;
                 Ok(portfolio)
             } else {
-                let error: Value = response.json().await?;
-                Err(ApiError::Backend(error.to_string()))
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Backend(format!(
+                    "get_portfolio failed: status={}, body={}",
+                    response.status(),
+                    text
+                )))
             }
         }
     }
@@ -114,8 +124,12 @@ impl ApiClient {
                 let portfolio: Portfolio = response.json().await?;
                 Ok(portfolio)
             } else {
-                let error: Value = response.json().await?;
-                Err(ApiError::Backend(error.to_string()))
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Backend(format!(
+                    "create_portfolio failed: status={}, body={}",
+                    response.status(),
+                    text
+                )))
             }
         }
     }
@@ -126,36 +140,98 @@ impl ApiClient {
             self.alpha_vantage_current_prices(symbols).await
         } else {
             let symbols_str = symbols.join(",");
-            let url = format!("{}/market-data?symbols={}", self.base_url, symbols_str);
+            let url = format!("{}/market-data?symbols={}", self.base_url, urlencoding::encode(&symbols_str));
             let response = self.client.get(&url).send().await?;
             
             if response.status().is_success() {
                 let data: HashMap<String, f64> = response.json().await?;
                 Ok(data)
             } else {
-                let error: Value = response.json().await?;
-                Err(ApiError::Backend(error.to_string()))
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Backend(format!(
+                    "get_market_data failed: status={}, body={}",
+                    response.status(),
+                    text
+                )))
             }
         }
     }
     
-    /// Get historic price data for symbols
-    pub async fn get_historic_prices(&self, symbols: &[String], start_date: &str, end_date: &str) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
+    /// Get historic price data for symbols from backend or native provider
+    pub async fn get_historic_prices(
+        &self,
+        symbols: &[String],
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
         if self.use_native_provider {
             self.alpha_vantage_price_history(symbols, start_date, end_date).await
         } else {
+            // Try robustly with common query param names and endpoint variants
+            // Primary attempt: /market-data/history?symbols=AAPL,MSFT&start=YYYY-MM-DD&end=YYYY-MM-DD
             let symbols_str = symbols.join(",");
-            let url = format!("{}/market-data/history?symbols={}&start_date={}&end_date={}", self.base_url, symbols_str, start_date, end_date);
-            let response = self.client.get(&url).send().await?;
-            
-            if response.status().is_success() {
-                let data: HashMap<String, Vec<PricePoint>> = response.json().await?;
-                Ok(data)
-            } else {
-                let error: Value = response.json().await?;
-                Err(ApiError::Backend(error.to_string()))
+            let attempts = vec![
+                format!(
+                    "{}/market-data/history?symbols={}&start={}&end={}",
+                    self.base_url,
+                    urlencoding::encode(&symbols_str),
+                    urlencoding::encode(start_date),
+                    urlencoding::encode(end_date)
+                ),
+                format!(
+                    "{}/market-data/history?symbols={}&start_date={}&end_date={}",
+                    self.base_url,
+                    urlencoding::encode(&symbols_str),
+                    urlencoding::encode(start_date),
+                    urlencoding::encode(end_date)
+                ),
+                // Some backends might hang this under /market-data with different path
+                format!(
+                    "{}/market-data?symbols={}&start={}&end={}",
+                    self.base_url,
+                    urlencoding::encode(&symbols_str),
+                    urlencoding::encode(start_date),
+                    urlencoding::encode(end_date)
+                ),
+            ];
+
+            let mut last_err = None;
+            for url in attempts {
+                match self.fetch_and_parse_history(&url).await {
+                    Ok(map) => return Ok(map),
+                    Err(e) => {
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
             }
+
+            Err(last_err.unwrap_or_else(|| {
+                ApiError::Backend("All history attempts failed with unknown error".into())
+            }))
         }
+    }
+
+    async fn fetch_and_parse_history(&self, url: &str) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
+        let response = self.client.get(url).send().await?;
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!(
+                "history request failed: url={}, status={}, body={}",
+                url, response.status(), text
+            )));
+        }
+
+        // We will try to parse multiple shapes:
+        // 1) { "AAPL": [ {timestamp, open, high, low, close, volume}, ... ], "MSFT": [...] }
+        // 2) { "data": { "AAPL": [ {...} ], ... } }
+        // 3) [ { "symbol": "AAPL", "prices": [ {...} ] }, ... ]
+        // 4) { "market_data": [ {"symbol": "AAPL", "timestamp": "...", "open":...}, ... ] }  -> flattened
+        // 5) Anything else: try to coerce best-effort
+        let v: Value = response.json().await?;
+        parse_history_value(v).map_err(|e| {
+            ApiError::Parsing(format!("Failed parsing history from {}: {}", url, e))
+        })
     }
 
     // ------------ Native provider (Alpha Vantage) ------------
@@ -238,7 +314,10 @@ impl ApiClient {
                     // Parse date as UTC midnight
                     let date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
                         .map_err(|e| ApiError::Parsing(format!("Invalid date: {} - {}", date_str, e)))?;
-                    let dt = chrono::DateTime::<chrono::Utc>::from_utc(date.and_hms_opt(0, 0, 0).unwrap(), chrono::Utc);
+                    let dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                        date.and_hms_opt(0, 0, 0).unwrap(),
+                        chrono::Utc
+                    );
 
                     let open = get_num(fields, "1. open")?;
                     let high = get_num(fields, "2. high")?;
@@ -264,6 +343,141 @@ impl ApiClient {
 
         Ok(result)
     }
+}
+
+fn parse_history_value(v: Value) -> Result<HashMap<String, Vec<PricePoint>>, String> {
+    // Case 1: Simple symbol->array map
+    if let Some(map) = v.as_object() {
+        // Check if values are arrays of objs
+        let mut out: HashMap<String, Vec<PricePoint>> = HashMap::new();
+
+        // Some servers wrap under "data"
+        if let Some(inner) = map.get("data") {
+            return parse_history_value(inner.clone());
+        }
+
+        // Some servers might put a flat "market_data" array with symbol per row
+        if let Some(arr) = map.get("market_data").and_then(|m| m.as_array()) {
+            let mut grouped: HashMap<String, Vec<PricePoint>> = HashMap::new();
+            for row in arr {
+                if let Some(symbol) = row.get("symbol").and_then(|s| s.as_str()) {
+                    if let Some(pp) = parse_price_point(row) {
+                        grouped.entry(symbol.to_string()).or_default().push(pp);
+                    }
+                }
+            }
+            for (_k, v) in grouped.iter_mut() {
+                v.sort_by_key(|p| p.timestamp);
+            }
+            return Ok(grouped);
+        }
+
+        // Else, treat each key as symbol => array of points
+        let mut any_symbol = false;
+        for (symbol, arr_val) in map {
+            if let Some(arr) = arr_val.as_array() {
+                any_symbol = true;
+                let mut points = Vec::new();
+                for item in arr {
+                    if let Some(pp) = parse_price_point(item) {
+                        points.push(pp);
+                    }
+                }
+                points.sort_by_key(|p| p.timestamp);
+                out.insert(symbol.clone(), points);
+            }
+        }
+        if any_symbol {
+            return Ok(out);
+        }
+    }
+
+    // Case 3: Array of { symbol, prices: [ ... ] }
+    if let Some(arr) = v.as_array() {
+        let mut out: HashMap<String, Vec<PricePoint>> = HashMap::new();
+        for entry in arr {
+            if let Some(symbol) = entry.get("symbol").and_then(|s| s.as_str()) {
+                if let Some(prices) = entry.get("prices").and_then(|p| p.as_array()) {
+                    let mut pts = Vec::new();
+                    for item in prices {
+                        if let Some(pp) = parse_price_point(item) {
+                            pts.push(pp);
+                        }
+                    }
+                    pts.sort_by_key(|p| p.timestamp);
+                    out.insert(symbol.to_string(), pts);
+                }
+            }
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+
+    Err("Unsupported history response shape".into())
+}
+
+fn parse_price_point(item: &Value) -> Option<PricePoint> {
+    // Accept different field names for timestamp
+    let ts = item.get("timestamp")
+        .or_else(|| item.get("time"))
+        .or_else(|| item.get("date"))?;
+
+    // Parse timestamp which can be iso string or epoch millis/seconds
+    let timestamp = if let Some(s) = ts.as_str() {
+        // Try RFC3339/ISO8601
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            dt.with_timezone(&chrono::Utc)
+        } else if let Ok(nd) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            chrono::DateTime::<chrono::Utc>::from_utc(nd.and_hms_opt(0, 0, 0).unwrap(), chrono::Utc)
+        } else {
+            return None;
+        }
+    } else if let Some(n) = ts.as_i64() {
+        // Treat as epoch seconds
+        chrono::DateTime::<chrono::Utc>::from_utc(
+            chrono::NaiveDateTime::from_timestamp_opt(n, 0)?,
+            chrono::Utc,
+        )
+    } else {
+        return None;
+    };
+
+    let open = get_num_flex(item, &["open", "o"])?;
+    let high = get_num_flex(item, &["high", "h"])?;
+    let low = get_num_flex(item, &["low", "l"])?;
+    let close = get_num_flex(item, &["close", "c", "adj_close"]).unwrap_or_else(|| {
+        // If close not available, try 'price'
+        get_num_flex(item, &["price"]).unwrap_or(0.0)
+    });
+    let volume = get_num_flex(item, &["volume", "v"])
+        .map(|v| v as u64)
+        .unwrap_or(0);
+
+    Some(PricePoint {
+        timestamp,
+        open,
+        high,
+        low,
+        close,
+        volume,
+    })
+}
+
+fn get_num_flex(map: &Value, keys: &[&str]) -> Option<f64> {
+    for k in keys {
+        if let Some(v) = map.get(*k) {
+            if let Some(n) = v.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = v.as_str() {
+                if let Ok(n) = s.parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn get_num(map: &serde_json::Value, key: &str) -> Result<f64, ApiError> {
