@@ -40,6 +40,15 @@ impl PortfolioComponent for TablesComponent {
         // Holdings table
         if self.show_holdings {
             ui.heading("Holdings");
+
+            // Pre-compute row height using the outer UI before handing `ui` to the table builder
+            let text_height = {
+                let style = ui.style();
+                egui::TextStyle::Body
+                    .resolve(style)
+                    .size
+                    .max(ui.spacing().interact_size.y)
+            };
             
             TableBuilder::new(ui)
                 .striped(true)
@@ -50,15 +59,6 @@ impl PortfolioComponent for TablesComponent {
                 .column(Column::remainder())
                 .min_scrolled_height(0.0)
                 .body(|mut body| {
-                    // Capture style-derived values BEFORE using `body` to avoid borrowing `ui` again inside the closure:
-                    let text_height = {
-                        let style = body.ui().style(); // get style from the table body context
-                        egui::TextStyle::Body
-                            .resolve(style)
-                            .size
-                            .max(body.ui().spacing().interact_size.y)
-                    };
-
                     // Header
                     body.row(22.0, |mut row| {
                         row.col(|ui| { ui.strong("Symbol"); });
