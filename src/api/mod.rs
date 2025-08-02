@@ -44,12 +44,14 @@ impl ApiClient {
             if response.status().is_success() {
                 Ok(())
             } else {
-                    let text = response.text().await.unwrap_or_default();
-                    Err(ApiError::Backend(format!(
-                        "Health check failed: status={}, body={}",
-                        response.status(),
-                        text
-                    )))
+                // Capture status before consuming response by .text()
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Backend(format!(
+                    "Health check failed: status={}, body={}",
+                    status,
+                    text
+                )))
             }
         }
     }
@@ -66,10 +68,11 @@ impl ApiClient {
                 let portfolios: Vec<Portfolio> = response.json().await?;
                 Ok(portfolios)
             } else {
+                let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "get_portfolios failed: status={}, body={}",
-                    response.status(),
+                    status,
                     text
                 )))
             }
@@ -90,10 +93,11 @@ impl ApiClient {
                 let portfolio: Portfolio = response.json().await?;
                 Ok(portfolio)
             } else {
+                let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "get_portfolio failed: status={}, body={}",
-                    response.status(),
+                    status,
                     text
                 )))
             }
@@ -124,10 +128,11 @@ impl ApiClient {
                 let portfolio: Portfolio = response.json().await?;
                 Ok(portfolio)
             } else {
+                let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "create_portfolio failed: status={}, body={}",
-                    response.status(),
+                    status,
                     text
                 )))
             }
@@ -147,10 +152,11 @@ impl ApiClient {
                 let data: HashMap<String, f64> = response.json().await?;
                 Ok(data)
             } else {
+                let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "get_market_data failed: status={}, body={}",
-                    response.status(),
+                    status,
                     text
                 )))
             }
@@ -215,10 +221,11 @@ impl ApiClient {
     async fn fetch_and_parse_history(&self, url: &str) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
         let response = self.client.get(url).send().await?;
         if !response.status().is_success() {
+            let status = response.status();
             let text = response.text().await.unwrap_or_default();
             return Err(ApiError::Backend(format!(
                 "history request failed: url={}, status={}, body={}",
-                url, response.status(), text
+                url, status, text
             )));
         }
 
@@ -314,10 +321,11 @@ impl ApiClient {
                     // Parse date as UTC midnight
                     let date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
                         .map_err(|e| ApiError::Parsing(format!("Invalid date: {} - {}", date_str, e)))?;
-                    let dt = chrono::DateTime::<chrono::Utc>::from_utc(
-                        date.and_hms_opt(0, 0, 0).unwrap(),
-                        chrono::Utc
-                    );
+                    let naive_dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| {
+                        ApiError::Parsing(format!("Invalid time for date {}", date_str))
+                    })?;
+                    // Use from_naive_utc_and_offset to avoid deprecated from_utc
+                    let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc);
 
                     let open = get_num(fields, "1. open")?;
                     let high = get_num(fields, "2. high")?;
@@ -429,16 +437,15 @@ fn parse_price_point(item: &Value) -> Option<PricePoint> {
         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
             dt.with_timezone(&chrono::Utc)
         } else if let Ok(nd) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-            chrono::DateTime::<chrono::Utc>::from_utc(nd.and_hms_opt(0, 0, 0).unwrap(), chrono::Utc)
+            let naive = nd.and_hms_opt(0, 0, 0)?;
+            chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
         } else {
             return None;
         }
     } else if let Some(n) = ts.as_i64() {
-        // Treat as epoch seconds
-        chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp_opt(n, 0)?,
-            chrono::Utc,
-        )
+        // Treat as epoch seconds using DateTime::from_timestamp (new API)
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(n, 0)?;
+        dt
     } else {
         return None;
     };

@@ -1,7 +1,6 @@
 use crate::api::ApiClient;
 use crate::components::ComponentManager;
 use crate::state::AppState;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -415,20 +414,6 @@ impl TemplateApp {
                     ctx.request_repaint();
                 });
             });
-        }
-    }
-
-    /// Enqueue symbol list to fetch price history for (deduplicated)
-    pub fn enqueue_price_history_fetch(&mut self, symbols: &[String]) {
-        if symbols.is_empty() {
-            return;
-        }
-        if let Ok(mut queue) = self.fetch_queue.lock() {
-            for s in symbols {
-                if !queue.iter().any(|q| q == s) {
-                    queue.push(s.clone());
-                }
-            }
         }
     }
 
