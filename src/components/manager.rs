@@ -1,6 +1,6 @@
-//! Component manager for organizing and rendering portfolio components
+ //! Component manager for organizing and rendering portfolio components
 
-use super::{PortfolioComponent, ComponentCategory};
+use super::{PortfolioComponent, ComponentCategory, DataProviderStatusComponent};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
 use crate::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent};
@@ -19,6 +19,7 @@ impl ComponentManager {
         };
         
         // Register all available components
+        manager.register_component(Box::new(DataProviderStatusComponent::new()));
         manager.register_component(Box::new(DashboardComponent::new()));
         manager.register_component(Box::new(ChartsComponent::new()));
         manager.register_component(Box::new(TablesComponent::new()));

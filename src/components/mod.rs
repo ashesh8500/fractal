@@ -1,15 +1,17 @@
-//! Component system for modular UI rendering
-//! 
-//! This module defines the trait system for portfolio components and manages
-//! their lifecycle. Each component receives a Portfolio and Config as parameters
-//! following dependency injection principles.
+ //! Component system for modular UI rendering
+ //! 
+ //! This module defines the trait system for portfolio components and manages
+ //! their lifecycle. Each component receives a Portfolio and Config as parameters
+ //! following dependency injection principles.
 
 use crate::portfolio::Portfolio;
 use crate::state::Config;
 
 pub mod manager;
+pub mod status;
 
 pub use manager::ComponentManager;
+pub use status::DataProviderStatusComponent;
 
 /// Trait for all portfolio UI components
 /// 
