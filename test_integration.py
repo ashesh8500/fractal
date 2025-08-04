@@ -26,6 +26,7 @@ import os
 import json
 import time
 import signal
+import subprocess
 from typing import Dict, Any, Optional, Tuple
 
 DEFAULT_BASE_URL = "http://localhost:8000/api/v1"
@@ -191,10 +192,8 @@ async def test_backend_endpoints(base_url: str) -> bool:
     return ok
 
 
-def start_backend_server() -> Optional["subprocess.Popen"]:
+def start_backend_server() -> Optional[subprocess.Popen]:
     """Start the backend server for testing."""
-    import subprocess
-
     print("🚀 Starting backend server...")
 
     env = os.environ.copy()
