@@ -74,36 +74,50 @@ impl<'a> ScrollableTable<'a> {
                 for (row_index, row) in self.rows.iter().enumerate() {
                     let is_selected = self.selected_rows.contains(&row_index);
 
-                    let rect = ui.allocate_rect(
-                        egui::Rect::from_min_size(
-                            ui.cursor().min,
-                            egui::vec2(ui.available_width(), row_height),
-                        ),
-                        egui::Sense::click(),
-                    ).rect;
+                    let rect = ui
+                        .allocate_rect(
+                            egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(ui.available_width(), row_height),
+                            ),
+                            egui::Sense::click(),
+                        )
+                        .rect;
 
                     // Backgrounds
                     if self.striped && row_index % 2 == 0 {
-                        ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, ui.visuals().faint_bg_color);
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::CornerRadius::ZERO,
+                            ui.visuals().faint_bg_color,
+                        );
                     }
                     if is_selected {
-                        ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, ui.visuals().selection.bg_fill);
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::CornerRadius::ZERO,
+                            ui.visuals().selection.bg_fill,
+                        );
                     }
 
-                    // Row content
-                    ui.allocate_ui_at_rect(rect, |ui| {
-                        ui.horizontal(|ui| {
-                            for (i, cell) in row.iter().enumerate() {
-                                let _cell_resp = ui.label(cell);
-                                if i < row.len() - 1 {
-                                    ui.add_space(16.0);
-                                }
+                    // Row content using allocate_new_ui (replaces deprecated allocate_ui_at_rect)
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .id_salt(self.id.with(("row-ui", row_index))),
+                    );
+                    child.horizontal(|ui| {
+                        for (i, cell) in row.iter().enumerate() {
+                            let _cell_resp = ui.label(cell);
+                            if i < row.len() - 1 {
+                                ui.add_space(16.0);
                             }
-                        });
+                        }
                     });
 
                     // Interact and toggle
-                    let resp = ui.interact(rect, self.id.with(("row", row_index)), egui::Sense::click());
+                    let resp =
+                        ui.interact(rect, self.id.with(("row", row_index)), egui::Sense::click());
                     if self.clickable && resp.clicked() {
                         let now_selected = if is_selected {
                             self.selected_rows.remove(&row_index);
@@ -130,10 +144,14 @@ impl<'a> ScrollableTable<'a> {
         );
 
         if ui.is_rect_visible(rect) {
-            ui.allocate_ui_at_rect(rect, |ui| {
-                self.header_ui(ui);
-                self.body_ui(ui);
-            });
+            // Container area for header + body
+            let mut container = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .id_salt(self.id.with("container")),
+            );
+            self.header_ui(&mut container);
+            self.body_ui(&mut container);
         }
 
         response

@@ -33,7 +33,7 @@ impl ResponsiveGrid {
     pub fn show<R>(
         self,
         ui: &mut Ui,
-        mut items: impl IntoIterator<Item = impl FnMut(&mut Ui) -> R>,
+        items: impl IntoIterator<Item = impl FnMut(&mut Ui) -> R>,
     ) {
         let available_width = ui.available_width();
         let columns = (available_width / self.min_col_width).floor().max(1.0) as usize;

@@ -1,4 +1,4 @@
-use egui::{Color32, Response, Ui, Widget, Vec2, Frame, RichText, CornerRadius};
+use egui::{Color32, Response, Ui, Widget, Vec2, Frame, CornerRadius};
 
 pub struct MetricCard {
     label: String,
@@ -72,26 +72,26 @@ impl MetricCard {
                 cursor_y += 22.0 + spacing;
             }
 
-            // Label
+            // Label (use plain &str with font/color)
             {
                 let pos = egui::pos2(rect.left() + left_padding, cursor_y);
                 ui.painter().text(
                     pos,
                     egui::Align2::LEFT_TOP,
-                    RichText::new(&self.label).weak().to_string(),
+                    &self.label,
                     egui::FontId::proportional(14.0),
                     text_color.gamma_multiply(0.8),
                 );
                 cursor_y += 18.0 + spacing;
             }
 
-            // Value
+            // Value (use plain &str with larger font/color)
             {
                 let pos = egui::pos2(rect.left() + left_padding, cursor_y);
                 ui.painter().text(
                     pos,
                     egui::Align2::LEFT_TOP,
-                    RichText::new(&self.value).strong().to_string(),
+                    &self.value,
                     egui::FontId::proportional(22.0),
                     text_color,
                 );
