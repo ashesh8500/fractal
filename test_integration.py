@@ -28,6 +28,7 @@ import time
 import signal
 import subprocess
 from typing import Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta, UTC as DATETIME_UTC
 
 DEFAULT_BASE_URL = "http://localhost:8000/api/v1"
 
@@ -153,8 +154,7 @@ async def test_backend_endpoints(base_url: str) -> bool:
         # 6. Market data history (hardened endpoint)
         print("\n6. Testing market data history...")
         # Choose a tight date range to minimize data size and rate limits
-        from datetime import datetime, timedelta
-        end_dt = datetime.utcnow().date()
+        end_dt = datetime.now(DATETIME_UTC).date()
         start_dt = end_dt - timedelta(days=10)
         params = {
             "symbols": "AAPL,MSFT",

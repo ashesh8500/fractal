@@ -4,8 +4,8 @@ Clean, composable API design.
 """
 
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional, Dict, Any, Union
-from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta, UTC as DATETIME_UTC
 
 from .schemas import (
     PortfolioCreate, PortfolioResponse, StrategyExecuteRequest, 
@@ -23,11 +23,70 @@ try:
 except Exception:
     get_data_service = None  # If portfolio_lib is not available, we will error on use
 
-# Fallback data service if DI is unavailable: yfinance
+# Fallback data service if DI is unavailable: yfinance (from portfolio_lib)
 try:
     from portfolio_lib.portfolio_lib.services.data.yfinance import YFinanceDataService  # type: ignore
 except Exception:
     YFinanceDataService = None  # type: ignore
+
+
+# Local fallback using yfinance directly to ensure endpoint works without portfolio_lib
+class LocalYFinanceFallback:
+    def __init__(self) -> None:
+        try:
+            import yfinance as yf  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(f"yfinance not installed: {exc}")
+        self.yf = yf
+
+    def fetch_price_history(self, symbols: List[str], start_date: str, end_date: str) -> Dict[str, Any]:
+        import pandas as pd  # type: ignore
+        out: Dict[str, Any] = {}
+        start = start_date
+        end = end_date
+
+        # yfinance can fetch multiple symbols; however, handle one-by-one for simpler normalization
+        for sym in symbols:
+            try:
+                df = self.yf.download(sym, start=start, end=end, progress=False, auto_adjust=False, group_by="column")
+                # Ensure DataFrame
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    out[sym] = df
+                else:
+                    out[sym] = pd.DataFrame()
+            except Exception:
+                out[sym] = self._empty_df()
+        return out
+
+    @staticmethod
+    def _empty_df():
+        try:
+            import pandas as pd  # type: ignore
+            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+        except Exception:
+            return []  # last resort
+
+    def fetch_current_prices(self, symbols: List[str]) -> Dict[str, float]:
+        prices: Dict[str, float] = {}
+        for sym in symbols:
+            try:
+                t = self.yf.Ticker(sym)
+                info = t.fast_info if hasattr(t, "fast_info") else {}
+                price = None
+                if info:
+                    price = info.get("last_price") or info.get("last_trade") or info.get("regular_market_price")
+                if price is None:
+                    hist = t.history(period="1d")
+                    if not hist.empty:
+                        price = float(hist["Close"].iloc[-1])
+                if price is not None:
+                    prices[sym] = float(price)
+            except Exception:
+                continue
+        return prices
+
+    def get_data_source_name(self) -> str:
+        return "yfinance-local"
 
 
 # Create API router
@@ -116,7 +175,7 @@ def _parse_date_param(label: str, v: Optional[str]) -> Optional[datetime]:
     if not v:
         return None
     try:
-        return datetime.strptime(v, "%Y-%m-%d")
+        return datetime.strptime(v, "%Y-%m-%d").replace(tzinfo=DATETIME_UTC)
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid {label} format (expected YYYY-MM-DD): {v}")
 
@@ -177,6 +236,7 @@ async def get_market_data_history(
     Historical price data endpoint:
     - Uses portfolio_lib DataService via DI when available
     - Falls back to YFinanceDataService if DI unavailable
+    - As a last resort, uses a local yfinance-based fallback to ensure functionality
     - Normalizes various DataFrame/dict shapes into a stable PricePoint-like list per symbol
 
     Returns:
@@ -186,10 +246,10 @@ async def get_market_data_history(
     if not symbol_list:
         raise HTTPException(status_code=400, detail="At least one symbol required")
 
-    # Resolve dates, defaulting to the last 180 days ending today
+    # Resolve dates, defaulting to the last 180 days ending today (UTC)
     start_s = start or start_date
     end_s = end or end_date
-    end_dt = _parse_date_param("end", end_s) or datetime.utcnow()
+    end_dt = _parse_date_param("end", end_s) or datetime.now(DATETIME_UTC)
     start_dt = _parse_date_param("start", start_s) or (end_dt - timedelta(days=180))
     if start_dt > end_dt:
         raise HTTPException(status_code=400, detail="start date must be <= end date")
@@ -197,7 +257,7 @@ async def get_market_data_history(
     start_iso = start_dt.date().isoformat()
     end_iso = end_dt.date().isoformat()
 
-    # Resolve data service via DI or fallback to yfinance
+    # Resolve data service via DI or fallback to portfolio_lib yfinance, then local yfinance
     ds = None
     if get_data_service is not None:
         try:
@@ -206,13 +266,17 @@ async def get_market_data_history(
         except Exception:
             ds = None
 
-    if ds is None:
-        if YFinanceDataService is None:
-            raise HTTPException(status_code=500, detail="Data service configuration unavailable")
+    if ds is None and YFinanceDataService is not None:
         try:
             ds = YFinanceDataService()  # type: ignore
+        except Exception:
+            ds = None
+
+    if ds is None:
+        try:
+            ds = LocalYFinanceFallback()
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to initialize fallback data service: {exc}")
+            raise HTTPException(status_code=500, detail=f"Data service configuration unavailable: {exc}")
 
     # Fetch price history from provider; library contract: fetch_price_history(symbols, start, end)
     try:
@@ -339,18 +403,10 @@ async def get_market_data_history(
             return []
         return rows
 
-    # Normalize payload
-    # raw_history is expected to be Dict[str, DataFrame | List[Dict] | Dict[str, Dict]]
-    try:
-        items = raw_history.items() if isinstance(raw_history, dict) else []
-    except Exception:
-        items = []
-
     for sym in symbol_list:
         sym_rows: List[Dict[str, Any]] = []
         data: Any = None
 
-        # Try to fetch by symbol key, else try case-insensitive match
         if isinstance(raw_history, dict):
             if sym in raw_history:
                 data = raw_history[sym]
@@ -394,10 +450,8 @@ async def get_market_data_history(
                             "close": _to_float(row.get("close") or row.get("c") or row.get("adj_close")),
                             "volume": _to_int(row.get("volume") or row.get("v")),
                         }
-                        # Keep even if some fields missing; but require close to be present
                         if item["close"] is None:
                             continue
-                        # Fill missing OHLC from close if provider only returns close
                         for k in ("open", "high", "low"):
                             if item[k] is None:
                                 item[k] = item["close"]
