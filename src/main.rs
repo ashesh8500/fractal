@@ -1,82 +1,82 @@
-#![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+use eframe::egui;
+use portfolio_tracker::{Portfolio, Config};
+use portfolio_tracker::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent};
 
-// When compiling natively:
-#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-
-    // Install egui_extras image loaders (for better demo-like behavior with images):
-    egui_extras::install_image_loaders(&eframe::egui::Context::default());
-
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 700.0])
-            .with_min_inner_size([640.0, 480.0])
-            .with_icon(
-                // NOTE: Adding an icon is optional
-                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                    .expect("Failed to load icon"),
-            ),
-        ..Default::default()
-    };
+    let portfolio = Portfolio::new();
+    let config = Config::default();
+    
     eframe::run_native(
-        "Portfolio Management System",
-        native_options,
+        "Portfolio Tracker",
+        eframe::NativeOptions::default(),
         Box::new(|cc| {
-            // Ensure loaders for this context too:
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(fractal::TemplateApp::new(cc)))
+            Box::new(App::new(portfolio, config))
         }),
     )
 }
 
-// When compiling to web using trunk:
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    use eframe::wasm_bindgen::JsCast as _;
+struct App {
+    portfolio: Portfolio,
+    config: Config,
+    dashboard: DashboardComponent,
+    charts: ChartsComponent,
+    tables: TablesComponent,
+    candles: CandlesComponent,
+}
 
-    // Redirect `log` message to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
-
-    let web_options = eframe::WebOptions::default();
-
-    wasm_bindgen_futures::spawn_local(async {
-        let document = web_sys::window()
-            .expect("No window")
-            .document()
-            .expect("No document");
-
-        let canvas = document
-            .get_element_by_id("the_canvas_id")
-            .expect("Failed to find the_canvas_id")
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("the_canvas_id was not a HtmlCanvasElement");
-
-        let start_result = eframe::WebRunner::new()
-            .start(
-                canvas,
-                web_options,
-                Box::new(|cc| {
-                    egui_extras::install_image_loaders(&cc.egui_ctx);
-                    Ok(Box::new(fractal::TemplateApp::new(cc)))
-                }),
-            )
-            .await;
-
-        // Remove the loading text and spinner:
-        if let Some(loading_text) = document.get_element_by_id("loading_text") {
-            match start_result {
-                Ok(_) => {
-                    loading_text.remove();
-                }
-                Err(e) => {
-                    loading_text.set_inner_html(
-                        "<p> The app has crashed. See the developer console for details. </p>",
-                    );
-                    panic!("Failed to start eframe: {e:?}");
-                }
-            }
+impl App {
+    fn new(portfolio: Portfolio, config: Config) -> Self {
+        Self {
+            portfolio,
+            config,
+            dashboard: DashboardComponent::new(),
+            charts: ChartsComponent::new(),
+            tables: TablesComponent::new(),
+            candles: CandlesComponent::new(),
         }
-    });
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // Main layout with tabs
+            egui::TopBottomPanel::top("top_bar").show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Portfolio Tracker");
+                });
+            });
+
+            egui::SidePanel::left("side_panel").show(ui.ctx(), |ui| {
+                ui.heading("Components");
+                ui.separator();
+                
+                // Component toggles
+                ui.checkbox(&mut self.dashboard.is_open, "Dashboard");
+                ui.checkbox(&mut self.charts.is_open, "Charts");
+                ui.checkbox(&mut self.tables.is_open, "Tables");
+                ui.checkbox(&mut self.candles.is_open, "Candles");
+            });
+
+            egui::CentralPanel::default().show(ui.ctx(), |ui| {
+                // Show components based on their open state
+                if self.dashboard.is_open {
+                    self.dashboard.update(ui, &mut self.portfolio, &self.config);
+                }
+                
+                if self.charts.is_open {
+                    self.charts.update(ui, &mut self.portfolio, &self.config);
+                }
+                
+                if self.tables.is_open {
+                    self.tables.update(ui, &mut self.portfolio, &self.config);
+                }
+                
+                if self.candles.is_open {
+                    self.candles.update(ui, &mut self.portfolio, &self.config);
+                }
+            });
+        });
+    }
 }
