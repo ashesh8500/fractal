@@ -32,21 +32,27 @@ impl MetricCard {
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
 
         if ui.is_rect_visible(rect) {
-            let visuals = ui.style().interact(&response);
-            let base = self.color.unwrap_or(ui.visuals().widgets.noninteractive.bg_fill);
+            // Take only the values we need from style/visuals to avoid holding an immutable borrow of `ui` across a mutable call.
+            let style = ui.style().clone();
+            let interact_visuals = style.interact(&response);
+            let base_fill = self
+                .color
+                .unwrap_or(style.widgets.noninteractive.bg_fill);
             let bg_color = if response.hovered() {
-                base.gamma_multiply(0.9)
+                base_fill.gamma_multiply(0.9)
             } else {
-                base
+                base_fill
             };
+            let frame_stroke = interact_visuals.bg_stroke; // Copy; Stroke is Copy
 
-            // Background frame using modern API
+            // Background frame using modern API (now safe: we don't hold `&ui` immutably)
             Frame::new()
                 .fill(bg_color)
-                .stroke(visuals.bg_stroke)
+                .stroke(frame_stroke)
                 .corner_radius(CornerRadius::same(8)) // u8 radius
                 .show(ui, |_inner_ui| {});
 
+            // Text colors
             let text_color = if self.color.is_some() {
                 Color32::WHITE
             } else {
@@ -98,10 +104,18 @@ impl MetricCard {
             }
 
             // Border stroke with modern signature
+            // Acquire a color without borrowing `ui` immutably across the call:
+            let stroke_color = ui
+                .visuals()
+                .widgets
+                .noninteractive
+                .bg_stroke
+                .color
+                .gamma_multiply(0.2);
             ui.painter().rect_stroke(
                 rect,
                 CornerRadius::same(8),
-                egui::Stroke::new(1.0, visuals.bg_stroke.color.gamma_multiply(0.2)),
+                egui::Stroke::new(1.0, stroke_color),
                 egui::StrokeKind::Outside,
             );
         }
