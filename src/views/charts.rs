@@ -43,7 +43,7 @@ fn to_unix_secs(ts: chrono::DateTime<chrono::Utc>) -> f64 {
 }
 
 fn format_price_chart(
-    plot_ui: &mut PlotUi,
+    plot_ui: &mut PlotUi<'_>,
     closes: &[(f64, f64)],
     sma20: Option<Vec<(f64, f64)>>,
     ema12: Option<Vec<(f64, f64)>>,
@@ -67,7 +67,7 @@ fn format_price_chart(
     }
 }
 
-fn format_rsi_chart(plot_ui: &mut PlotUi, rsi_series: &[(f64, f64)]) {
+fn format_rsi_chart(plot_ui: &mut PlotUi<'_>, rsi_series: &[(f64, f64)]) {
     let rsi_line = Line::new(PlotPoints::from_iter(
         rsi_series.iter().map(|(x, y)| [*x, *y]),
     ))
@@ -214,8 +214,8 @@ impl PortfolioComponent for ChartsComponent {
                                 Plot::new(format!("price_chart_{}", symbol))
                                     .legend(Legend::default())
                                     .view_aspect(2.0)
-                                    .x_axis_formatter(|x, _| {
-                                        let secs = *x;
+                                    .x_axis_formatter(|mark, _| {
+                                        let secs = mark.value;
                                         let ts = UNIX_EPOCH
                                             + std::time::Duration::from_secs_f64(secs.max(0.0));
                                         let dt: chrono::DateTime<chrono::Utc> =
@@ -244,8 +244,8 @@ impl PortfolioComponent for ChartsComponent {
 
                                 Plot::new(format!("volume_chart_{}", symbol))
                                     .view_aspect(2.0)
-                                    .x_axis_formatter(|x, _| {
-                                        let secs = *x;
+                                    .x_axis_formatter(|mark, _| {
+                                        let secs = mark.value;
                                         let ts = UNIX_EPOCH
                                             + std::time::Duration::from_secs_f64(secs.max(0.0));
                                         let dt: chrono::DateTime<chrono::Utc> =
@@ -273,8 +273,8 @@ impl PortfolioComponent for ChartsComponent {
                                     Plot::new(format!("rsi_chart_{}", symbol))
                                         .legend(Legend::default())
                                         .view_aspect(2.0)
-                                        .x_axis_formatter(|x, _| {
-                                            let secs = *x;
+                                        .x_axis_formatter(|mark, _| {
+                                            let secs = mark.value;
                                             let ts = UNIX_EPOCH
                                                 + std::time::Duration::from_secs_f64(secs.max(0.0));
                                             let dt: chrono::DateTime<chrono::Utc> =

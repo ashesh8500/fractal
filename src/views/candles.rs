@@ -45,7 +45,7 @@ fn to_unix_secs(ts: chrono::DateTime<chrono::Utc>) -> f64 {
     ts.timestamp() as f64
 }
 
-fn draw_candles(plot_ui: &mut PlotUi, ohlcv: &[(f64, f64, f64, f64, f64)]) {
+fn draw_candles(plot_ui: &mut PlotUi<'_>, ohlcv: &[(f64, f64, f64, f64, f64)]) {
     // ohlcv: (x, open, high, low, close)
     // Render using:
     // - wick: vertical line from low to high
@@ -225,8 +225,8 @@ impl PortfolioComponent for CandlesComponent {
                                     Plot::new(format!("candlestick_chart_{}", symbol))
                                         .view_aspect(2.0)
                                         .legend(Legend::default())
-                                        .x_axis_formatter(|x, _| {
-                                            let secs = *x;
+                                        .x_axis_formatter(|mark, _| {
+                                            let secs = mark.value;
                                             let ts = UNIX_EPOCH
                                                 + std::time::Duration::from_secs_f64(secs.max(0.0));
                                             let dt: chrono::DateTime<chrono::Utc> =
@@ -251,8 +251,8 @@ impl PortfolioComponent for CandlesComponent {
 
                                     Plot::new(format!("volume_chart_{}", symbol))
                                         .view_aspect(2.0)
-                                        .x_axis_formatter(|x, _| {
-                                            let secs = *x;
+                                        .x_axis_formatter(|mark, _| {
+                                            let secs = mark.value;
                                             let ts = UNIX_EPOCH
                                                 + std::time::Duration::from_secs_f64(secs.max(0.0));
                                             let dt: chrono::DateTime<chrono::Utc> =
