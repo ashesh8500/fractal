@@ -1,6 +1,3 @@
-//! Collapsible panel widget based on egui demo patterns
-//! Features: smooth animations, custom headers, nested content
-
 use egui::{Response, Ui};
 
 pub struct CollapsiblePanel<'a> {
@@ -32,37 +29,35 @@ impl<'a> CollapsiblePanel<'a> {
         self,
         ui: &mut Ui,
         add_contents: impl FnOnce(&mut Ui) -> R,
-    ) -> Option<R> {
-        let id = ui.make_persistent_id(self.title);
-        let mut state = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(self.default_open));
-        
-        let header_res = ui.horizontal(|ui| {
-            let header = if state { "▼" } else { "▶" };
-            let response = ui.selectable_label(state, format!("{header} {}", self.title));
-            response.on_hover_text("Click to expand/collapse");
-            response
-        });
+    ) -> (Response, Option<R>) {
+        let id = ui.id().with(self.title);
+        let mut state = ui.data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(self.default_open);
 
-        if header_res.response.clicked() {
+        let header_text = if state { "▼" } else { "▶" };
+        let label = format!("{header_text} {}", self.title);
+        let response = ui.selectable_label(state, label);
+        response.clone().on_hover_text("Click to expand/collapse");
+
+        if response.clicked() {
             state = !state;
-            ui.data_mut(|d| d.insert_temp(id, state));
+            ui.data_mut(|d| d.insert_persisted(id, state));
         }
 
+        let mut out = None;
         if state {
-            let content_ui = |ui: &mut Ui| {
-                ui.separator();
-                let result = add_contents(ui);
-                ui.add_space(4.0);
-                result
-            };
-
             if self.indent {
-                Some(ui.indent(id.with("indent"), content_ui).inner)
+                ui.indent(id.with("indent"), |ui| {
+                    ui.separator();
+                    out = Some(add_contents(ui));
+                    ui.add_space(4.0);
+                });
             } else {
-                Some(content_ui(ui))
+                ui.separator();
+                out = Some(add_contents(ui));
+                ui.add_space(4.0);
             }
-        } else {
-            None
         }
+
+        (response, out)
     }
 }

@@ -1,6 +1,3 @@
-//! Hover tooltip widget based on egui demo patterns
-//! Features: rich content, delayed show, custom styling
-
 use egui::{Response, Ui};
 
 pub struct HoverTooltip {
@@ -29,8 +26,7 @@ impl HoverTooltip {
     }
 
     pub fn show(self, response: &Response) {
-        // We can honor delay by just showing on hover; real delayed behavior would need timers.
-        response.on_hover_ui_at_pointer(|ui| {
+        response.clone().on_hover_ui_at_pointer(|ui| {
             ui.set_max_width(self.max_width);
             ui.label(&self.text);
         });
@@ -41,7 +37,7 @@ impl HoverTooltip {
         response: &Response,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) {
-        response.on_hover_ui_at_pointer(|ui| {
+        response.clone().on_hover_ui_at_pointer(|ui| {
             ui.set_max_width(self.max_width);
             add_contents(ui);
         });
@@ -56,12 +52,15 @@ pub trait TooltipExt {
 
 impl TooltipExt for Response {
     fn tooltip(&self, text: impl Into<String>) -> &Self {
-        HoverTooltip::new(text).show(self);
+        self.clone().on_hover_ui_at_pointer(|ui| {
+            ui.set_max_width(300.0);
+            ui.label(text.into());
+        });
         self
     }
 
     fn rich_tooltip<R>(&self, add_contents: impl FnOnce(&mut Ui) -> R) -> &Self {
-        self.on_hover_ui_at_pointer(|ui| {
+        self.clone().on_hover_ui_at_pointer(|ui| {
             ui.set_max_width(300.0);
             add_contents(ui);
         });

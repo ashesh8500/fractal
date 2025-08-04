@@ -1,7 +1,4 @@
-//! Elegant metric card widget based on egui demo patterns
-//! Features: colored backgrounds, icons, hover effects
-
-use egui::{Color32, Response, Ui, Widget, Vec2, Rounding, Frame};
+use egui::{Color32, Response, Ui, Widget, Vec2, Frame, RichText, CornerRadius};
 
 pub struct MetricCard {
     label: String,
@@ -40,62 +37,72 @@ impl MetricCard {
             let bg_color = if response.hovered() {
                 base.gamma_multiply(0.9)
             } else {
-                base.gamma_multiply(0.8)
+                base
             };
 
-            // Background frame similar to demo style
-            Frame::none()
+            // Background frame using modern API
+            Frame::new()
                 .fill(bg_color)
                 .stroke(visuals.bg_stroke)
-                .rounding(egui::style::CornerRadius::same(8.0))
-                .show(ui, |_| {});
+                .corner_radius(CornerRadius::same(8)) // u8 radius
+                .show(ui, |_inner_ui| {});
 
-            // Use painter to draw within rect
             let text_color = if self.color.is_some() {
                 Color32::WHITE
             } else {
                 ui.visuals().text_color()
             };
 
-            let margin = 12.0;
-            let content_rect = rect.shrink(margin);
+            let left_padding = 16.0;
+            let top_padding = 12.0;
+            let spacing = 6.0;
 
-            // Draw icon if present
-            let mut text_pos = content_rect.left_top();
+            let mut cursor_y = rect.top() + top_padding;
+
+            // Icon (if any)
             if let Some(icon) = self.icon {
+                let icon_pos = egui::pos2(rect.left() + left_padding, cursor_y);
                 ui.painter().text(
-                    text_pos,
+                    icon_pos,
                     egui::Align2::LEFT_TOP,
                     icon,
+                    egui::FontId::proportional(20.0),
+                    text_color,
+                );
+                cursor_y += 22.0 + spacing;
+            }
+
+            // Label
+            {
+                let pos = egui::pos2(rect.left() + left_padding, cursor_y);
+                ui.painter().text(
+                    pos,
+                    egui::Align2::LEFT_TOP,
+                    RichText::new(&self.label).weak().to_string(),
+                    egui::FontId::proportional(14.0),
+                    text_color.gamma_multiply(0.8),
+                );
+                cursor_y += 18.0 + spacing;
+            }
+
+            // Value
+            {
+                let pos = egui::pos2(rect.left() + left_padding, cursor_y);
+                ui.painter().text(
+                    pos,
+                    egui::Align2::LEFT_TOP,
+                    RichText::new(&self.value).strong().to_string(),
                     egui::FontId::proportional(22.0),
                     text_color,
                 );
-                text_pos.x += 30.0;
             }
 
-            // Draw label
-            ui.painter().text(
-                text_pos,
-                egui::Align2::LEFT_TOP,
-                &self.label,
-                egui::FontId::proportional(14.0),
-                text_color.gamma_multiply(0.8),
-            );
-
-            // Draw value
-            ui.painter().text(
-                content_rect.left_bottom() + Vec2::new(0.0, -6.0),
-                egui::Align2::LEFT_BOTTOM,
-                &self.value,
-                egui::FontId::proportional(22.0).strong(),
-                text_color,
-            );
-
-            // Subtle outline
+            // Border stroke with modern signature
             ui.painter().rect_stroke(
                 rect,
-                Rounding::same(8.0),
+                CornerRadius::same(8),
                 egui::Stroke::new(1.0, visuals.bg_stroke.color.gamma_multiply(0.2)),
+                egui::StrokeKind::Outside,
             );
         }
 

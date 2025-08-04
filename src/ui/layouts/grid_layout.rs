@@ -1,6 +1,3 @@
-//! Responsive grid layout based on egui demo patterns
-//! Automatically adjusts columns based on available width
-
 use egui::{Ui, Vec2};
 
 pub struct ResponsiveGrid {
@@ -36,43 +33,31 @@ impl ResponsiveGrid {
     pub fn show<R>(
         self,
         ui: &mut Ui,
-        items: impl IntoIterator<Item = impl FnOnce(&mut Ui) -> R>,
+        mut items: impl IntoIterator<Item = impl FnMut(&mut Ui) -> R>,
     ) {
         let available_width = ui.available_width();
-        let num_columns = ((available_width / self.min_col_width) as usize)
-            .max(1)
-            .min(self.max_columns);
-        
-        let col_width =
-            (available_width - self.spacing.x * (num_columns.saturating_sub(1)) as f32) / num_columns as f32;
+        let columns = (available_width / self.min_col_width).floor().max(1.0) as usize;
+        let columns = columns.min(self.max_columns).max(1);
 
-        let items_vec: Vec<_> = items.into_iter().collect();
-        let total = items_vec.len();
-        if total == 0 {
-            return;
-        }
-        let num_rows = (total + num_columns - 1) / num_columns;
+        let mut items_iter = items.into_iter();
 
-        for row in 0..num_rows {
-            ui.horizontal(|ui| {
+        loop {
+            let mut filled_any = false;
+            ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = self.spacing;
-                
-                for col in 0..num_columns {
-                    let index = row * num_columns + col;
-                    if index < total {
-                        let item = &items_vec[index];
-                        ui.allocate_ui(Vec2::new(col_width, 0.0), |ui| {
+                for _ in 0..columns {
+                    if let Some(mut item) = items_iter.next() {
+                        filled_any = true;
+                        ui.allocate_ui(Vec2::new(self.min_col_width, 0.0), |ui| {
                             item(ui);
                         });
-                    } else {
-                        ui.allocate_space(Vec2::new(col_width, 0.0));
                     }
                 }
             });
-
-            if row < num_rows - 1 {
-                ui.add_space(self.spacing.y);
+            if !filled_any {
+                break;
             }
+            ui.add_space(self.spacing.y);
         }
     }
 }
