@@ -1,7 +1,7 @@
 #![allow(clippy::needless_return)]
 //! Price charts component for technical analysis
 //! Improvements:
-//! - Window/panel uses a shared WindowPanel helper (egui-demo-like behavior)
+//! - Render exclusively inside standardized WindowPanel helper
 //! - Internal content is scrollable to avoid clipped content
 //! - Time-based X axis with date formatting
 //! - Better controls UI and legends
@@ -29,7 +29,8 @@ pub struct ChartsComponent {
 impl ChartsComponent {
     pub fn new() -> Self {
         Self {
-            is_open: false,
+            // Default to open so content is visible and to avoid confusion with empty windows
+            is_open: true,
             selected_symbol: None,
             show_sma20: true,
             show_ema12: true,
@@ -94,16 +95,22 @@ fn format_rsi_chart(plot_ui: &mut PlotUi<'_>, rsi_series: &[(f64, f64)]) {
 
 impl PortfolioComponent for ChartsComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, _config: &Config) {
-        // Use a standardized window like in egui demos
+        // Render exclusively inside the standardized window.
+        // If closed, do not draw duplicate content into the parent Ui.
         let ctx = ui.ctx().clone();
         let mut open = self.is_open;
 
-        WindowPanel::new("charts_window", "Price Charts", &mut open)
+        // If window is closed, just update state and return (avoid duplicate panel)
+        if !open {
+            self.is_open = false;
+            return;
+        }
+
+        WindowPanel::new("charts_window_panel", "Price Charts", &mut open)
             .default_size([720.0, 520.0])
             .resizable(true)
-            .scroll(false, false) // Window itself not scrolled; inner content manages scroll
+            .scroll(false, false)
             .show(&ctx, |ui| {
-                // Scrollable container so content is never clipped
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -210,7 +217,6 @@ impl PortfolioComponent for ChartsComponent {
                                 ui.add_space(8.0);
                                 ui.heading("Price Trend");
 
-                                // Time-based plot: use seconds since epoch and custom formatter for dates.
                                 Plot::new(format!("price_chart_{}", symbol))
                                     .legend(Legend::default())
                                     .view_aspect(2.0)
@@ -295,9 +301,6 @@ impl PortfolioComponent for ChartsComponent {
                                 ui.label("• MACD (coming soon)");
                             } else {
                                 ui.label("No price history available for this symbol");
-                                if ui.button("Fetch Price History").clicked() {
-                                    ui.label("Would fetch price history from backend...");
-                                }
                             }
                         } else {
                             ui.label("Select a symbol to view its chart");

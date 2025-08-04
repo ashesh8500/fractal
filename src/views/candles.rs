@@ -1,9 +1,9 @@
 #![allow(clippy::needless_return)]
 //! Candlestick charts component for detailed price analysis
 //! Improvements:
-//! - Uses standardized WindowPanel wrapper
+//! - Render exclusively inside standardized WindowPanel wrapper
 //! - Scrollable content to avoid overflow/clipping
-//! - Proper candlestick rendering (wick + body) instead of baseline bars
+//! - Proper candlestick rendering (wick + body)
 //! - Time-based X axis with date tick formatting
 //! - Cleaner controls and legends
 
@@ -34,7 +34,8 @@ enum Timeframe {
 impl CandlesComponent {
     pub fn new() -> Self {
         Self {
-            is_open: false,
+            // Default to open to avoid empty window confusion
+            is_open: true,
             selected_symbol: None,
             timeframe: Timeframe::Daily,
         }
@@ -47,10 +48,8 @@ fn to_unix_secs(ts: chrono::DateTime<chrono::Utc>) -> f64 {
 
 fn draw_candles(plot_ui: &mut PlotUi<'_>, ohlcv: &[(f64, f64, f64, f64, f64)]) {
     // ohlcv: (x, open, high, low, close)
-    // Render using:
-    // - wick: vertical line from low to high
-    // - body: thicker vertical line from open to close
-    // We use NaN breaks to draw per-candle segments in single Line items.
+    // Wick: vertical line from low to high
+    // Body: thicker vertical line from open to close
 
     // Wicks
     let mut wick_segments: Vec<[f64; 2]> = Vec::with_capacity(ohlcv.len() * 3);
@@ -106,11 +105,17 @@ fn draw_candles(plot_ui: &mut PlotUi<'_>, ohlcv: &[(f64, f64, f64, f64, f64)]) {
 
 impl PortfolioComponent for CandlesComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, _config: &Config) {
-        // Use a standardized window like in egui demos
+        // Render exclusively in the standardized window.
         let ctx = ui.ctx().clone();
         let mut open = self.is_open;
 
-        WindowPanel::new("candles_window", "Candlestick Charts", &mut open)
+        // If window is closed, do not draw duplicate inline content
+        if !open {
+            self.is_open = false;
+            return;
+        }
+
+        WindowPanel::new("candles_window_panel", "Candlestick Charts", &mut open)
             .default_size([760.0, 560.0])
             .resizable(true)
             .scroll(false, false)
@@ -203,8 +208,7 @@ impl PortfolioComponent for CandlesComponent {
 
                                     ui.add_space(8.0);
 
-                                    // Build candle tuples
-                                    // Limit to last N for performance
+                                    // Build candle tuples (limit to last N for performance)
                                     let show_n = prices.len().min(300);
                                     let start = prices.len().saturating_sub(show_n);
 
