@@ -4,7 +4,7 @@ Clean, composable API design.
 """
 
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timedelta
 
 from .schemas import (
@@ -112,6 +112,57 @@ async def get_market_data(
     return handle_result(result)
 
 
+def _parse_date_param(label: str, v: Optional[str]) -> Optional[datetime]:
+    if not v:
+        return None
+    try:
+        return datetime.strptime(v, "%Y-%m-%d")
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid {label} format (expected YYYY-MM-DD): {v}")
+
+
+def _to_float(val: Any) -> Optional[float]:
+    try:
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            val = val.strip()
+            if not val:
+                return None
+            return float(val)
+        # pandas NA or numpy types handling
+        try:
+            import math
+            if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                return None
+        except Exception:
+            pass
+        return float(val)
+    except Exception:
+        return None
+
+
+def _to_int(val: Any) -> int:
+    try:
+        if val is None:
+            return 0
+        if isinstance(val, (int,)):
+            return int(val)
+        if isinstance(val, float):
+            return int(val)
+        if isinstance(val, str):
+            s = val.strip()
+            if not s:
+                return 0
+            # Some APIs return volume as float string; cast through float first
+            return int(float(s))
+        return int(val)
+    except Exception:
+        return 0
+
+
 @api_router.get("/market-data/history")
 async def get_market_data_history(
     symbols: str = Query(..., description="Comma-separated list of symbols"),
@@ -136,18 +187,10 @@ async def get_market_data_history(
         raise HTTPException(status_code=400, detail="At least one symbol required")
 
     # Resolve dates, defaulting to the last 180 days ending today
-    def parse_date_str(label: str, v: Optional[str]) -> Optional[datetime]:
-        if not v:
-            return None
-        try:
-            return datetime.strptime(v, "%Y-%m-%d")
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid {label} format (expected YYYY-MM-DD): {v}")
-
     start_s = start or start_date
     end_s = end or end_date
-    end_dt = parse_date_str("end", end_s) or datetime.utcnow()
-    start_dt = parse_date_str("start", start_s) or (end_dt - timedelta(days=180))
+    end_dt = _parse_date_param("end", end_s) or datetime.utcnow()
+    start_dt = _parse_date_param("start", start_s) or (end_dt - timedelta(days=180))
     if start_dt > end_dt:
         raise HTTPException(status_code=400, detail="start date must be <= end date")
 
@@ -158,7 +201,8 @@ async def get_market_data_history(
     ds = None
     if get_data_service is not None:
         try:
-            ds = get_data_service(provider.value if hasattr(provider, "value") else str(provider))
+            prov_name: str = provider.value if hasattr(provider, "value") else str(provider)
+            ds = get_data_service(prov_name)
         except Exception:
             ds = None
 
@@ -187,91 +231,143 @@ async def get_market_data_history(
         pd = None  # type: ignore
         has_pandas = False
 
-    def normalize_df_to_rows(sym: str, df_obj) -> List[Dict[str, Any]]:
+    def normalize_df_to_rows(sym: str, df_obj: Any) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         if not has_pandas:
             return rows
         try:
-            if isinstance(df_obj, pd.DataFrame):
+            if isinstance(df_obj, pd.Series):
+                df = df_obj.to_frame()
+            elif isinstance(df_obj, pd.DataFrame):
                 df = df_obj
+            else:
+                return rows
 
-                # Handle MultiIndex columns: typical yfinance group_by='ticker'
-                # Columns may look like: ('Open','AAPL'), ('High','AAPL'), ...
-                if isinstance(df.columns, pd.MultiIndex):
-                    # Try selecting the symbol level (second level often ticker)
-                    # Normalize level order to (field, symbol)
-                    level_names = list(df.columns.names) if df.columns.names else []
-                    # Find which level is symbol by checking membership
-                    sym_level = None
-                    for lvl in range(df.columns.nlevels):
-                        if sym in set([c[lvl] for c in df.columns]):
-                            sym_level = lvl
-                            break
-                    if sym_level is not None:
-                        try:
-                            df = df.xs(sym, axis=1, level=sym_level, drop_level=False)
-                        except Exception:
-                            # alternative: swaplevel then xs
-                            try:
-                                df = df.copy()
-                                df.columns = df.columns.swaplevel(0, sym_level)
-                                df = df.xs(sym, axis=1, level=0, drop_level=True)
-                            except Exception:
-                                pass
+            # Ensure index is datetime-like; if not, try to parse
+            if not isinstance(df.index, pd.DatetimeIndex):
+                try:
+                    df = df.copy()
+                    df.index = pd.to_datetime(df.index, errors="coerce")
+                    df = df[df.index.notna()]
+                except Exception:
+                    pass
 
-                # After potential xs, columns might still be MultiIndex -> flatten best-effort
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = ["_".join([str(p) for p in tup if p is not None]) for tup in df.columns.to_list()]
-
-                cols_lower = {str(c).lower(): str(c) for c in df.columns}
-                def col(*names):
-                    for n in names:
-                        l = n.lower()
-                        if l in cols_lower:
-                            return cols_lower[l]
-                    return None
-
-                c_open = col("open", "o", "1. open")
-                c_high = col("high", "h", "2. high")
-                c_low = col("low", "l", "3. low")
-                c_close = col("close", "c", "4. close", "adj close", "adj_close", "adjusted close")
-                c_volume = col("volume", "v", "6. volume")
-
-                # If close missing but Adj Close present with different exact casing, try common variants
-                if c_close is None:
-                    for alt in ["adj close", "adj_close", "adjusted close"]:
-                        if alt in cols_lower:
-                            c_close = cols_lower[alt]
-                            break
-
-                # Iterate rows
-                for idx, row in df.iterrows():
-                    ts = str(idx.date()) if hasattr(idx, "date") else str(idx)
+            # Handle MultiIndex columns: typical yfinance group_by='ticker'
+            if isinstance(df.columns, pd.MultiIndex):
+                # Try to select symbol level
+                level_hit = None
+                for lvl in range(df.columns.nlevels):
                     try:
-                        item = {
-                            "timestamp": ts,
-                            "open": float(row[c_open]) if c_open else None,
-                            "high": float(row[c_high]) if c_high else None,
-                            "low": float(row[c_low]) if c_low else None,
-                            "close": float(row[c_close]) if c_close else None,
-                            "volume": int(row[c_volume]) if c_volume and not pd.isna(row[c_volume]) else 0,
-                        }
-                        # require core OHLC fields
-                        if None in (item["open"], item["high"], item["low"], item["close"]):
-                            continue
-                        rows.append(item)
+                        candidates = {c[lvl] for c in df.columns}
+                        if sym in candidates:
+                            level_hit = lvl
+                            break
                     except Exception:
                         continue
+                if level_hit is not None:
+                    try:
+                        df = df.xs(sym, axis=1, level=level_hit, drop_level=True)
+                    except Exception:
+                        try:
+                            tmp = df.copy()
+                            tmp.columns = tmp.columns.swaplevel(0, level_hit)
+                            df = tmp.xs(sym, axis=1, level=0, drop_level=True)
+                        except Exception:
+                            # if cannot slice, attempt to flatten and continue best-effort
+                            pass
 
-                rows.sort(key=lambda x: x["timestamp"])
+            # If still MultiIndex, flatten
+            if isinstance(df.columns, pd.MultiIndex):
+                df = df.copy()
+                df.columns = ["_".join([str(p) for p in tup if p is not None]) for tup in df.columns.to_list()]
+
+            # Build lowercase map
+            cols_lower = {str(c).lower(): str(c) for c in df.columns}
+
+            def col(*names):
+                for n in names:
+                    key = n.lower()
+                    if key in cols_lower:
+                        return cols_lower[key]
+                # try partial contains for common alpha-vantage/yfinance columns
+                for key, orig in cols_lower.items():
+                    for n in names:
+                        if n.lower() in key:
+                            return orig
+                return None
+
+            c_open = col("open", "o", "1. open")
+            c_high = col("high", "h", "2. high")
+            c_low = col("low", "l", "3. low")
+            c_close = col("close", "c", "4. close", "adj close", "adj_close", "adjusted close")
+            if c_close is None:
+                for alt in ["adj close", "adj_close", "adjusted close", "close"]:
+                    alt_col = col(alt)
+                    if alt_col:
+                        c_close = alt_col
+                        break
+            c_volume = col("volume", "v", "6. volume")
+
+            # Iterate rows safely
+            for idx, row in df.iterrows():
+                try:
+                    ts = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
+                except Exception:
+                    ts = str(idx)
+                o = _to_float(row[c_open]) if c_open and c_open in row else None
+                h = _to_float(row[c_high]) if c_high and c_high in row else None
+                l = _to_float(row[c_low]) if c_low and c_low in row else None
+                c = _to_float(row[c_close]) if c_close and c_close in row else None
+                v = _to_int(row[c_volume]) if c_volume and c_volume in row else 0
+
+                # require core OHLC fields
+                if None in (o, h, l, c):
+                    continue
+
+                rows.append({
+                    "timestamp": ts,
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": c,
+                    "volume": v,
+                })
+
+            rows.sort(key=lambda x: x["timestamp"])
         except Exception:
-            # On any failure, return empty rows to keep API stable per symbol
+            # Keep API stable: return empty array for this symbol on failure
             return []
         return rows
 
-    for sym, data in (raw_history or {}).items():
-        sym_rows: List[Dict[str, Any]] = []
+    # Normalize payload
+    # raw_history is expected to be Dict[str, DataFrame | List[Dict] | Dict[str, Dict]]
+    try:
+        items = raw_history.items() if isinstance(raw_history, dict) else []
+    except Exception:
+        items = []
 
+    for sym in symbol_list:
+        sym_rows: List[Dict[str, Any]] = []
+        data: Any = None
+
+        # Try to fetch by symbol key, else try case-insensitive match
+        if isinstance(raw_history, dict):
+            if sym in raw_history:
+                data = raw_history[sym]
+            else:
+                for k in raw_history.keys():
+                    try:
+                        if str(k).upper() == sym:
+                            data = raw_history[k]
+                            break
+                    except Exception:
+                        continue
+
+        if data is None:
+            out[sym] = []
+            continue
+
+        # DataFrame path
         if has_pandas:
             sym_rows = normalize_df_to_rows(sym, data)
 
@@ -281,33 +377,55 @@ async def get_market_data_history(
                 # List of dicts
                 if isinstance(data, list):
                     for row in data:
-                        ts = row.get("timestamp") or row.get("date")
-                        if not ts:
+                        if not isinstance(row, dict):
+                            continue
+                        ts = row.get("timestamp") or row.get("date") or row.get("time")
+                        if isinstance(ts, (datetime,)):
+                            ts = ts.date().isoformat()
+                        elif ts is not None:
+                            ts = str(ts)
+                        else:
                             continue
                         item = {
                             "timestamp": ts,
-                            "open": float(row.get("open", row.get("o", 0.0))),
-                            "high": float(row.get("high", row.get("h", 0.0))),
-                            "low": float(row.get("low", row.get("l", 0.0))),
-                            "close": float(row.get("close", row.get("c", row.get("adj_close", 0.0)))),
-                            "volume": int(row.get("volume", row.get("v", 0))),
+                            "open": _to_float(row.get("open") or row.get("o")),
+                            "high": _to_float(row.get("high") or row.get("h")),
+                            "low": _to_float(row.get("low") or row.get("l")),
+                            "close": _to_float(row.get("close") or row.get("c") or row.get("adj_close")),
+                            "volume": _to_int(row.get("volume") or row.get("v")),
                         }
-                        # No strict OHLC check in dict path; include best-effort
+                        # Keep even if some fields missing; but require close to be present
+                        if item["close"] is None:
+                            continue
+                        # Fill missing OHLC from close if provider only returns close
+                        for k in ("open", "high", "low"):
+                            if item[k] is None:
+                                item[k] = item["close"]
                         sym_rows.append(item)
                     sym_rows.sort(key=lambda x: x["timestamp"])
                 # Dict keyed by date
                 elif isinstance(data, dict):
-                    for ts, row in data.items():
+                    for ts_k, row in data.items():
                         if not isinstance(row, dict):
                             continue
+                        ts = ts_k
+                        if isinstance(ts, (datetime,)):
+                            ts = ts.date().isoformat()
+                        else:
+                            ts = str(ts)
                         item = {
                             "timestamp": ts,
-                            "open": float(row.get("open", row.get("o", 0.0))),
-                            "high": float(row.get("high", row.get("h", 0.0))),
-                            "low": float(row.get("low", row.get("l", 0.0))),
-                            "close": float(row.get("close", row.get("c", row.get("adj_close", 0.0)))),
-                            "volume": int(row.get("volume", row.get("v", 0))),
+                            "open": _to_float(row.get("open") or row.get("o")),
+                            "high": _to_float(row.get("high") or row.get("h")),
+                            "low": _to_float(row.get("low") or row.get("l")),
+                            "close": _to_float(row.get("close") or row.get("c") or row.get("adj_close")),
+                            "volume": _to_int(row.get("volume") or row.get("v")),
                         }
+                        if item["close"] is None:
+                            continue
+                        for k in ("open", "high", "low"):
+                            if item[k] is None:
+                                item[k] = item["close"]
                         sym_rows.append(item)
                     sym_rows.sort(key=lambda x: x["timestamp"])
             except Exception:
