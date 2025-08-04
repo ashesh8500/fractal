@@ -47,6 +47,14 @@ pub struct TemplateApp {
 
     // Limit of items rendered in the left portfolio panel for performance/usability
     panel_render_limit: usize,
+
+    // Track last selected portfolio to auto-fetch history on selection change
+    #[serde(skip)]
+    last_selected_portfolio: Option<String>,
+
+    // Show last error briefly in the side panel
+    #[serde(skip)]
+    last_error_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +94,8 @@ impl Default for TemplateApp {
             fetch_queue: Arc::new(Mutex::new(Vec::new())),
             // keep left panel tame by default (shows first N items and a "show more" toggle)
             panel_render_limit: 30,
+            last_selected_portfolio: None,
+            last_error_message: None,
         }
     }
 }
@@ -116,6 +126,21 @@ impl TemplateApp {
         app.async_state = Arc::new(Mutex::new(AsyncState::default()));
         // fetch_queue is not an Option; it is always present. Ensure it is initialized.
         app.fetch_queue = Arc::new(Mutex::new(Vec::new()));
+
+        // If no portfolios exist and we're in native mode, create a quick demo portfolio to enable charts
+        if app.app_state.portfolios.is_none() && app.app_state.config.use_native_provider {
+            let mut demo = crate::portfolio::Portfolio::new("Demo".to_string());
+            demo.holdings.insert("AAPL".to_string(), 10.0);
+            demo.holdings.insert("MSFT".to_string(), 5.0);
+            demo.holdings.insert("GOOGL".to_string(), 3.0);
+            if app.app_state.portfolios.is_none() {
+                app.app_state.portfolios = Some(std::collections::HashMap::new());
+            }
+            if let Some(pmap) = &mut app.app_state.portfolios {
+                pmap.insert(demo.name.clone(), demo);
+            }
+            app.selected_portfolio = Some("Demo".to_string());
+        }
 
         app
     }
@@ -463,6 +488,23 @@ impl TemplateApp {
 
                 ui.separator();
 
+                // Auto-enqueue history fetch when selection changes or when no history yet
+                if let Some(current) = &self.selected_portfolio {
+                    if self.last_selected_portfolio.as_ref() != Some(current) {
+                        // selection changed; enqueue
+                        if let Some(symbols) = self
+                            .app_state
+                            .portfolios
+                            .as_ref()
+                            .and_then(|m| m.get(current))
+                            .map(|p| p.symbols())
+                        {
+                            self.enqueue_price_history_fetch(&symbols);
+                        }
+                        self.last_selected_portfolio = self.selected_portfolio.clone();
+                    }
+                }
+
                 // Portfolio list and selection with virtualization-like limit
                 if let Some(portfolios) = &self.app_state.portfolios {
                     let total = portfolios.len();
@@ -479,6 +521,16 @@ impl TemplateApp {
                                     self.selected_portfolio.as_ref() == Some(portfolio_name);
                                 if ui.selectable_label(selected, portfolio_name).clicked() {
                                     self.selected_portfolio = Some(portfolio_name.clone());
+                                    // Also enqueue on click
+                                    if let Some(symbols) = self
+                                        .app_state
+                                        .portfolios
+                                        .as_ref()
+                                        .and_then(|m| m.get(portfolio_name))
+                                        .map(|p| p.symbols())
+                                    {
+                                        self.enqueue_price_history_fetch(&symbols);
+                                    }
                                 }
                                 shown += 1;
                             }
@@ -496,6 +548,11 @@ impl TemplateApp {
                     }
                 } else {
                     ui.label("No portfolios loaded");
+                }
+
+                if let Some(err) = &self.last_error_message {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::RED, format!("Last error: {}", err));
                 }
 
                 ui.separator();
@@ -536,6 +593,7 @@ impl TemplateApp {
                     }
                     Err(e) => {
                         self.test_message = format!("Portfolio creation failed: {}", e);
+                        self.last_error_message = Some(e);
                     }
                 }
             }
@@ -558,6 +616,7 @@ impl TemplateApp {
                     }
                     Err(e) => {
                         self.test_message = format!("Failed to load portfolios: {}", e);
+                        self.last_error_message = Some(e);
                     }
                 }
             }
@@ -577,6 +636,7 @@ impl TemplateApp {
                                         }
                                         Err(e) => {
                                             log::warn!("Failed loading price history: {}", e);
+                                            self.last_error_message = Some(e);
                                         }
                                     }
                                 }
@@ -775,7 +835,7 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
         ui.label(" and ");
         ui.hyperlink_to(
             "eframe",
-            "https://github.com/emilk/egui/tree/master/crates/eframe",
+            "https://github.com/emilk/eframe/tree/master/crates/eframe",
         );
         ui.label(".");
     });
