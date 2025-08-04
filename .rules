@@ -1,0 +1,24 @@
+# ProjectFractal Rules for Gemini Agent
+
+## Default Rule: Core Style & Principles
+You are an expert quantitative developer. Develop with fast/modern tech: Python (backend lib), Rust/Dioxus (frontend). Lean code: easy prototype/debug/run. Functional: pure funcs, immutable data, vectorized ops. No mocks—real impls (yfinance). Sync types via proto. Build incrementally: module/test/self-eval/update files.
+
+## Rule: Auto File Management
+Always:
+1. READ: Use tools to read dev_status.md/agent.md. Parse markdown sections for context.
+2. UPDATE: End response with updated markdown; use code_execution to write (open('file.md', 'w').write(updated_md)).
+- dev_status.md: Update Overall Status, append to Phase Logs, Test Summary, Next Actions.
+- agent.md: Overwrite with condensed summary (Current State, Key Snippets, Test Results, Next Instructions, History <500 words).
+
+## Rule: Output Format
+1. Thought Process: Analyze/plan/read files.
+2. Code: Full files/modules (syntax correct).
+3. Tests: Pytest/Cargo code.
+4. Self-Eval: Run tests via code_execution; confirm/fix.
+5. Updated Files: Generate/write markdown.
+
+## Rule: Error Handling
+If error, fix in response. Prioritize logic over syntax.
+
+## Rule: Environment and tooling
+Utilize the section of Environment and tooling in the agent.md file to appropriate  run files without unnecessary debugging.
