@@ -506,30 +506,32 @@ impl TemplateApp {
                 }
 
                 // Portfolio list and selection with virtualization-like limit
+                let mut clicked_portfolio: Option<String> = None;
+                let mut to_enqueue_symbols: Option<Vec<String>> = None;
+
                 if let Some(portfolios) = &self.app_state.portfolios {
-                    let total = portfolios.len();
+                    let mut names: Vec<String> = portfolios.keys().cloned().collect();
+                    names.sort(); // deterministic order
+
+                    let total = names.len();
                     let mut shown = 0usize;
 
                     egui::ScrollArea::vertical()
                         .max_height(200.0)
                         .show(ui, |ui| {
-                            for (i, portfolio_name) in portfolios.keys().enumerate() {
+                            for (i, portfolio_name) in names.iter().enumerate() {
                                 if i >= self.panel_render_limit {
                                     break;
                                 }
                                 let selected =
                                     self.selected_portfolio.as_ref() == Some(portfolio_name);
                                 if ui.selectable_label(selected, portfolio_name).clicked() {
-                                    self.selected_portfolio = Some(portfolio_name.clone());
-                                    // Also enqueue on click
-                                    if let Some(symbols) = self
-                                        .app_state
-                                        .portfolios
-                                        .as_ref()
-                                        .and_then(|m| m.get(portfolio_name))
-                                        .map(|p| p.symbols())
-                                    {
-                                        self.enqueue_price_history_fetch(&symbols);
+                                    clicked_portfolio = Some(portfolio_name.clone());
+                                    // prepare symbols to enqueue after borrow ends
+                                    if let Some(pmap) = &self.app_state.portfolios {
+                                        if let Some(p) = pmap.get(portfolio_name) {
+                                            to_enqueue_symbols = Some(p.symbols());
+                                        }
                                     }
                                 }
                                 shown += 1;
@@ -548,6 +550,14 @@ impl TemplateApp {
                     }
                 } else {
                     ui.label("No portfolios loaded");
+                }
+
+                // Apply selection and enqueue outside of the ScrollArea closure to avoid borrow conflicts
+                if let Some(name) = clicked_portfolio.take() {
+                    self.selected_portfolio = Some(name);
+                }
+                if let Some(symbols) = to_enqueue_symbols.take() {
+                    self.enqueue_price_history_fetch(&symbols);
                 }
 
                 if let Some(err) = &self.last_error_message {
