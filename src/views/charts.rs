@@ -1,19 +1,22 @@
 #![allow(clippy::needless_return)]
 //! Price charts component for technical analysis
 //! Improvements:
-//! - Window/panel is scrollable to avoid clipped content
+//! - Window/panel uses a shared WindowPanel helper (egui-demo-like behavior)
+//! - Internal content is scrollable to avoid clipped content
 //! - Time-based X axis with date formatting
 //! - Better controls UI and legends
-//! - Uses egui demo patterns (ScrollArea, headings, spacing)
 
 use crate::components::{ComponentCategory, PortfolioComponent};
 use crate::portfolio::Portfolio;
-use crate::state::Config;
 use crate::portfolio::indicators::{ema, rsi, sma};
+use crate::state::Config;
 
 use egui::{self};
 use egui_plot::{Legend, Line, LineStyle, Plot, PlotPoints, PlotUi};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
+
+// New helper window
+use crate::ui::widgets::window::WindowPanel;
 
 pub struct ChartsComponent {
     is_open: bool,
@@ -91,200 +94,227 @@ fn format_rsi_chart(plot_ui: &mut PlotUi, rsi_series: &[(f64, f64)]) {
 
 impl PortfolioComponent for ChartsComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, _config: &Config) {
-        // Scrollable container so content is never clipped
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.heading("Price Charts");
-            ui.add_space(4.0);
+        // Use a standardized window like in egui demos
+        let ctx = ui.ctx().clone();
+        let mut open = self.is_open;
 
-            // Controls
-            ui.group(|ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Symbol:");
-                    let symbols = portfolio.symbols();
-                    if symbols.is_empty() {
-                        ui.weak("No symbols available");
-                    } else {
-                        egui::ComboBox::from_id_salt("charts_symbol_selector")
-                            .selected_text(
-                                self.selected_symbol
-                                    .as_deref()
-                                    .unwrap_or("Select symbol")
-                                    .to_string(),
-                            )
-                            .show_ui(ui, |ui| {
-                                for symbol in &symbols {
-                                    ui.selectable_value(
-                                        &mut self.selected_symbol,
-                                        Some(symbol.clone()),
-                                        symbol,
-                                    );
+        WindowPanel::new("charts_window", "Price Charts", &mut open)
+            .default_size([720.0, 520.0])
+            .resizable(true)
+            .scroll(false, false) // Window itself not scrolled; inner content manages scroll
+            .show(&ctx, |ui| {
+                // Scrollable container so content is never clipped
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.heading("Price Charts");
+                        ui.add_space(4.0);
+
+                        // Controls
+                        ui.group(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Symbol:");
+                                let symbols = portfolio.symbols();
+                                if symbols.is_empty() {
+                                    ui.weak("No symbols available");
+                                } else {
+                                    egui::ComboBox::from_id_salt("charts_symbol_selector")
+                                        .selected_text(
+                                            self.selected_symbol
+                                                .as_deref()
+                                                .unwrap_or("Select symbol")
+                                                .to_string(),
+                                        )
+                                        .show_ui(ui, |ui| {
+                                            for symbol in &symbols {
+                                                ui.selectable_value(
+                                                    &mut self.selected_symbol,
+                                                    Some(symbol.clone()),
+                                                    symbol,
+                                                );
+                                            }
+                                        });
                                 }
+
+                                ui.separator();
+
+                                ui.checkbox(&mut self.show_sma20, "SMA 20");
+                                ui.checkbox(&mut self.show_ema12, "EMA 12");
+                                ui.checkbox(&mut self.show_rsi, "RSI 14");
                             });
-                    }
+                        });
 
-                    ui.separator();
+                        ui.add_space(6.0);
+                        ui.separator();
 
-                    ui.checkbox(&mut self.show_sma20, "SMA 20");
-                    ui.checkbox(&mut self.show_ema12, "EMA 12");
-                    ui.checkbox(&mut self.show_rsi, "RSI 14");
-                });
+                        if let Some(symbol) = &self.selected_symbol {
+                            if let Some(price_history) = portfolio.get_price_history(symbol) {
+                                if price_history.is_empty() {
+                                    ui.label("No price history available for this symbol");
+                                    return;
+                                }
+
+                                // Basic stats
+                                if let Some(latest) = price_history.last() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.strong(format!("{} latest:", symbol));
+                                        ui.label(format!("Close ${:.2}", latest.close));
+                                        ui.separator();
+                                        ui.label(format!("High ${:.2}", latest.high));
+                                        ui.separator();
+                                        ui.label(format!("Low ${:.2}", latest.low));
+                                        ui.separator();
+                                        ui.label(format!("Vol {}", latest.volume));
+                                    });
+                                }
+                                ui.weak(format!("{} data points", price_history.len()));
+
+                                // Build time series
+                                let closes: Vec<(f64, f64)> = price_history
+                                    .iter()
+                                    .map(|p| (to_unix_secs(p.timestamp), p.close))
+                                    .collect();
+
+                                let close_vals: Vec<f64> =
+                                    price_history.iter().map(|p| p.close).collect();
+
+                                // SMA/EMA
+                                let sma20_series = if self.show_sma20 && close_vals.len() >= 20 {
+                                    let s = sma(&close_vals, 20);
+                                    Some(
+                                        s.iter()
+                                            .enumerate()
+                                            .map(|(i, &v)| {
+                                                (to_unix_secs(price_history[i + 19].timestamp), v)
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    )
+                                } else {
+                                    None
+                                };
+
+                                let ema12_series = if self.show_ema12 && close_vals.len() >= 12 {
+                                    let e = ema(&close_vals, 12);
+                                    Some(
+                                        e.iter()
+                                            .enumerate()
+                                            .map(|(i, &v)| {
+                                                (to_unix_secs(price_history[i + 11].timestamp), v)
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    )
+                                } else {
+                                    None
+                                };
+
+                                ui.add_space(8.0);
+                                ui.heading("Price Trend");
+
+                                // Time-based plot: use seconds since epoch and custom formatter for dates.
+                                Plot::new(format!("price_chart_{}", symbol))
+                                    .legend(Legend::default())
+                                    .view_aspect(2.0)
+                                    .x_axis_formatter(|x, _| {
+                                        let secs = *x;
+                                        let ts = UNIX_EPOCH
+                                            + std::time::Duration::from_secs_f64(secs.max(0.0));
+                                        let dt: chrono::DateTime<chrono::Utc> =
+                                            chrono::DateTime::<chrono::Utc>::from(ts);
+                                        dt.format("%Y-%m-%d").to_string()
+                                    })
+                                    .show(ui, |plot_ui| {
+                                        format_price_chart(
+                                            plot_ui,
+                                            &closes,
+                                            sma20_series,
+                                            ema12_series,
+                                        );
+                                    });
+
+                                // Volume chart
+                                ui.add_space(8.0);
+                                ui.heading("Volume");
+                                let volumes: Vec<[f64; 2]> = price_history
+                                    .iter()
+                                    .map(|p| [to_unix_secs(p.timestamp), p.volume as f64])
+                                    .collect();
+                                let volume_line = Line::new(PlotPoints::from(volumes))
+                                    .color(egui::Color32::GRAY)
+                                    .name("Volume");
+
+                                Plot::new(format!("volume_chart_{}", symbol))
+                                    .view_aspect(2.0)
+                                    .x_axis_formatter(|x, _| {
+                                        let secs = *x;
+                                        let ts = UNIX_EPOCH
+                                            + std::time::Duration::from_secs_f64(secs.max(0.0));
+                                        let dt: chrono::DateTime<chrono::Utc> =
+                                            chrono::DateTime::<chrono::Utc>::from(ts);
+                                        dt.format("%Y-%m-%d").to_string()
+                                    })
+                                    .show(ui, |plot_ui| {
+                                        plot_ui.line(volume_line);
+                                    });
+
+                                // RSI chart
+                                if self.show_rsi && close_vals.len() >= 15 {
+                                    ui.add_space(8.0);
+                                    ui.heading("RSI (14)");
+
+                                    let rsi_vals = rsi(&close_vals, 14);
+                                    let rsi_series: Vec<(f64, f64)> = rsi_vals
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, &v)| {
+                                            (to_unix_secs(price_history[i + 14].timestamp), v)
+                                        })
+                                        .collect();
+
+                                    Plot::new(format!("rsi_chart_{}", symbol))
+                                        .legend(Legend::default())
+                                        .view_aspect(2.0)
+                                        .x_axis_formatter(|x, _| {
+                                            let secs = *x;
+                                            let ts = UNIX_EPOCH
+                                                + std::time::Duration::from_secs_f64(secs.max(0.0));
+                                            let dt: chrono::DateTime<chrono::Utc> =
+                                                chrono::DateTime::<chrono::Utc>::from(ts);
+                                            dt.format("%Y-%m-%d").to_string()
+                                        })
+                                        .show(ui, |plot_ui| {
+                                            format_rsi_chart(plot_ui, &rsi_series);
+                                        });
+                                }
+
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.heading("Technical Indicators");
+                                ui.label("• Simple Moving Average (SMA)");
+                                ui.label("• Exponential Moving Average (EMA)");
+                                ui.label("• Relative Strength Index (RSI)");
+                                ui.label("• MACD (coming soon)");
+                            } else {
+                                ui.label("No price history available for this symbol");
+                                if ui.button("Fetch Price History").clicked() {
+                                    ui.label("Would fetch price history from backend...");
+                                }
+                            }
+                        } else {
+                            ui.label("Select a symbol to view its chart");
+                            let symbols = portfolio.symbols();
+                            if !symbols.is_empty() {
+                                ui.separator();
+                                ui.label("Available symbols:");
+                                for symbol in symbols {
+                                    ui.label(format!("• {}", symbol));
+                                }
+                            }
+                        }
+                    });
             });
 
-            ui.add_space(6.0);
-            ui.separator();
-
-            if let Some(symbol) = &self.selected_symbol {
-                if let Some(price_history) = portfolio.get_price_history(symbol) {
-                    if price_history.is_empty() {
-                        ui.label("No price history available for this symbol");
-                        return;
-                    }
-
-                    // Basic stats
-                    if let Some(latest) = price_history.last() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.strong(format!("{} latest:", symbol));
-                            ui.label(format!("Close ${:.2}", latest.close));
-                            ui.separator();
-                            ui.label(format!("High ${:.2}", latest.high));
-                            ui.separator();
-                            ui.label(format!("Low ${:.2}", latest.low));
-                            ui.separator();
-                            ui.label(format!("Vol {}", latest.volume));
-                        });
-                    }
-                    ui.weak(format!("{} data points", price_history.len()));
-
-                    // Build time series
-                    let closes: Vec<(f64, f64)> = price_history
-                        .iter()
-                        .map(|p| (to_unix_secs(p.timestamp), p.close))
-                        .collect();
-
-                    let close_vals: Vec<f64> = price_history.iter().map(|p| p.close).collect();
-
-                    // SMA/EMA
-                    let sma20_series = if self.show_sma20 && close_vals.len() >= 20 {
-                        let s = sma(&close_vals, 20);
-                        Some(
-                            s.iter()
-                                .enumerate()
-                                .map(|(i, &v)| (to_unix_secs(price_history[i + 19].timestamp), v))
-                                .collect::<Vec<_>>(),
-                        )
-                    } else {
-                        None
-                    };
-
-                    let ema12_series = if self.show_ema12 && close_vals.len() >= 12 {
-                        let e = ema(&close_vals, 12);
-                        Some(
-                            e.iter()
-                                .enumerate()
-                                .map(|(i, &v)| (to_unix_secs(price_history[i + 11].timestamp), v))
-                                .collect::<Vec<_>>(),
-                        )
-                    } else {
-                        None
-                    };
-
-                    ui.add_space(8.0);
-                    ui.heading("Price Trend");
-
-                    // Time-based plot: use seconds since epoch. egui_plot supports auto formatting dates if using custom formatter.
-                    Plot::new(format!("price_chart_{}", symbol))
-                        .legend(Legend::default())
-                        .view_aspect(2.0)
-                        .x_axis_formatter(|x, _| {
-                            let secs = *x;
-                            let ts =
-                                UNIX_EPOCH + std::time::Duration::from_secs_f64(secs.max(0.0));
-                            let dt: chrono::DateTime<chrono::Utc> =
-                                chrono::DateTime::<chrono::Utc>::from(ts);
-                            dt.format("%Y-%m-%d").to_string()
-                        })
-                        .show(ui, |plot_ui| {
-                            format_price_chart(plot_ui, &closes, sma20_series, ema12_series);
-                        });
-
-                    // Volume chart
-                    ui.add_space(8.0);
-                    ui.heading("Volume");
-                    let volumes: Vec<[f64; 2]> = price_history
-                        .iter()
-                        .map(|p| [to_unix_secs(p.timestamp), p.volume as f64])
-                        .collect();
-                    let volume_line = Line::new(PlotPoints::from(volumes))
-                        .color(egui::Color32::GRAY)
-                        .name("Volume");
-
-                    Plot::new(format!("volume_chart_{}", symbol))
-                        .view_aspect(2.0)
-                        .x_axis_formatter(|x, _| {
-                            let secs = *x;
-                            let ts =
-                                UNIX_EPOCH + std::time::Duration::from_secs_f64(secs.max(0.0));
-                            let dt: chrono::DateTime<chrono::Utc> =
-                                chrono::DateTime::<chrono::Utc>::from(ts);
-                            dt.format("%Y-%m-%d").to_string()
-                        })
-                        .show(ui, |plot_ui| {
-                            plot_ui.line(volume_line);
-                        });
-
-                    // RSI chart
-                    if self.show_rsi && close_vals.len() >= 15 {
-                        ui.add_space(8.0);
-                        ui.heading("RSI (14)");
-
-                        let rsi_vals = rsi(&close_vals, 14);
-                        let rsi_series: Vec<(f64, f64)> = rsi_vals
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &v)| (to_unix_secs(price_history[i + 14].timestamp), v))
-                            .collect();
-
-                        Plot::new(format!("rsi_chart_{}", symbol))
-                            .legend(Legend::default())
-                            .view_aspect(2.0)
-                            .x_axis_formatter(|x, _| {
-                                let secs = *x;
-                                let ts = UNIX_EPOCH
-                                    + std::time::Duration::from_secs_f64(secs.max(0.0));
-                                let dt: chrono::DateTime<chrono::Utc> =
-                                    chrono::DateTime::<chrono::Utc>::from(ts);
-                                dt.format("%Y-%m-%d").to_string()
-                            })
-                            .show(ui, |plot_ui| {
-                                format_rsi_chart(plot_ui, &rsi_series);
-                            });
-                    }
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.heading("Technical Indicators");
-                    ui.label("• Simple Moving Average (SMA)");
-                    ui.label("• Exponential Moving Average (EMA)");
-                    ui.label("• Relative Strength Index (RSI)");
-                    ui.label("• MACD (coming soon)");
-                } else {
-                    ui.label("No price history available for this symbol");
-                    if ui.button("Fetch Price History").clicked() {
-                        ui.label("Would fetch price history from backend...");
-                    }
-                }
-            } else {
-                ui.label("Select a symbol to view its chart");
-                let symbols = portfolio.symbols();
-                if !symbols.is_empty() {
-                    ui.separator();
-                    ui.label("Available symbols:");
-                    for symbol in symbols {
-                        ui.label(format!("• {}", symbol));
-                    }
-                }
-            }
-        });
+        // Update open state back to component:
+        self.is_open = open;
     }
 
     fn name(&self) -> &str {
