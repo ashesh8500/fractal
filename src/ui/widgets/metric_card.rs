@@ -37,7 +37,7 @@ impl MetricCard {
             let interact_visuals = style.interact(&response);
             let base_fill = self
                 .color
-                .unwrap_or(style.widgets.noninteractive.bg_fill);
+                .unwrap_or(style.visuals.widgets.noninteractive.bg_fill);
             let bg_color = if response.hovered() {
                 base_fill.gamma_multiply(0.9)
             } else {
