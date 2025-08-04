@@ -23,6 +23,12 @@ try:
 except Exception:
     get_data_service = None  # If portfolio_lib is not available, we will error on use
 
+# Fallback data service if DI is unavailable: yfinance
+try:
+    from portfolio_lib.portfolio_lib.services.data.yfinance import YFinanceDataService  # type: ignore
+except Exception:
+    YFinanceDataService = None  # type: ignore
+
 
 # Create API router
 api_router = APIRouter(prefix="/api/v1", tags=["portfolio"])
@@ -158,14 +164,21 @@ async def get_market_data_history(
     start_iso = start_dt.date().isoformat()
     end_iso = end_dt.date().isoformat()
 
-    if get_data_service is None:
-        raise HTTPException(status_code=500, detail="Data service configuration unavailable")
+    # Resolve data service via DI or fallback to yfinance
+    ds = None
+    if get_data_service is not None:
+        try:
+            ds = get_data_service(provider.value if hasattr(provider, "value") else str(provider))
+        except Exception:
+            ds = None
 
-    # Obtain data service via DI (honors provider selection)
-    try:
-        ds = get_data_service(provider.value if hasattr(provider, "value") else str(provider))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to initialize data service: {exc}")
+    if ds is None:
+        if YFinanceDataService is None:
+            raise HTTPException(status_code=500, detail="Data service configuration unavailable")
+        try:
+            ds = YFinanceDataService()  # type: ignore
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize fallback data service: {exc}")
 
     # Fetch price history from provider; library contract: fetch_price_history(symbols, start, end)
     try:
