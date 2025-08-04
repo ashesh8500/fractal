@@ -173,8 +173,8 @@ impl ApiClient {
         if self.use_native_provider {
             self.alpha_vantage_price_history(symbols, start_date, end_date).await
         } else {
-            // Try robustly with common query param names and endpoint variants
-            // Primary attempt: /market-data/history?symbols=AAPL,MSFT&start=YYYY-MM-DD&end=YYYY-MM-DD
+            // Only call the history endpoint; do NOT fall back to /market-data (current-only).
+            // Try both start/end variants for compatibility.
             let symbols_str = symbols.join(",");
             let attempts = vec![
                 format!(
@@ -191,17 +191,9 @@ impl ApiClient {
                     urlencoding::encode(start_date),
                     urlencoding::encode(end_date)
                 ),
-                // Some backends might hang this under /market-data with different path
-                format!(
-                    "{}/market-data?symbols={}&start={}&end={}",
-                    self.base_url,
-                    urlencoding::encode(&symbols_str),
-                    urlencoding::encode(start_date),
-                    urlencoding::encode(end_date)
-                ),
             ];
 
-            let mut last_err = None;
+            let mut last_err: Option<ApiError> = None;
             for url in attempts {
                 match self.fetch_and_parse_history(&url).await {
                     Ok(map) => return Ok(map),
@@ -212,8 +204,14 @@ impl ApiClient {
                 }
             }
 
+            // If the backend cannot provide history, optionally fall back to native if key present.
+            if self.alphavantage_api_key.is_some() {
+                log::warn!("Backend history endpoint failed. Falling back to Alpha Vantage for history.");
+                return self.alpha_vantage_price_history(symbols, start_date, end_date).await;
+            }
+
             Err(last_err.unwrap_or_else(|| {
-                ApiError::Backend("All history attempts failed with unknown error".into())
+                ApiError::Backend("All history endpoint attempts failed (no fallback native provider configured)".into())
             }))
         }
     }
@@ -229,12 +227,11 @@ impl ApiClient {
             )));
         }
 
-        // We will try to parse multiple shapes:
+        // Expect proper history shapes only; current-price maps are not supported here.
         // 1) { "AAPL": [ {timestamp, open, high, low, close, volume}, ... ], "MSFT": [...] }
         // 2) { "data": { "AAPL": [ {...} ], ... } }
         // 3) [ { "symbol": "AAPL", "prices": [ {...} ] }, ... ]
         // 4) { "market_data": [ {"symbol": "AAPL", "timestamp": "...", "open":...}, ... ] }  -> flattened
-        // 5) Anything else: try to coerce best-effort
         let v: Value = response.json().await?;
         parse_history_value(v).map_err(|e| {
             ApiError::Parsing(format!("Failed parsing history from {}: {}", url, e))
