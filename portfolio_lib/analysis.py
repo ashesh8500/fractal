@@ -6,6 +6,7 @@ Unified analysis runner:
 - Loads sensible default settings for backtests and per-strategy parameters.
 - Runs backtests for each discovered strategy with minimal repeated code.
 - Produces a comparison plot vs benchmark and prints key metrics.
+- Provides standardized allocation charts for each strategy at each rebalance interval.
 
 Usage:
     python -m portfolio_lib.analysis
@@ -44,6 +45,8 @@ class AnalysisDefaults:
     risk_tolerance: float
     max_position_size: float
     strategy_overrides: Dict[str, Dict[str, Any]]
+    plot_allocations: bool = True  # new: whether to render allocation charts
+    allocation_max_cols: int = 12  # cap symbols shown in allocation chart for readability
 
 
 def default_settings() -> AnalysisDefaults:
@@ -69,6 +72,8 @@ def default_settings() -> AnalysisDefaults:
             # "BollingerAttractivenessStrategy": {"bb_period": 20, "bb_std": 2.0, "adjustment_factor": 0.2},
             # "MomentumStrategy": {"lookback_period": 90, "top_n": 5},
         },
+        plot_allocations=True,
+        allocation_max_cols=12,
     )
 
 
@@ -258,42 +263,80 @@ def build_benchmark_series(price_history: Dict[str, pd.DataFrame], bt_cfg: Backt
     return None
 
 
+def common_normalized_series(
+    res: Any,
+    common_start: pd.Timestamp,
+    common_end: pd.Timestamp,
+) -> pd.Series:
+    """Normalize a strategy's equity curve to 1.0 at the common_start date."""
+    s = pd.Series(res.portfolio_values, index=pd.to_datetime(res.timestamps)).sort_index()
+    s = s[(s.index >= common_start) & (s.index <= common_end)]
+    if s.empty:
+        return pd.Series(dtype=float)
+    # Normalize at the first value on/after common_start
+    s = s / s.iloc[0]
+    return s
+
+
+def determine_common_period(results: Dict[str, Any]) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    starts = []
+    ends = []
+    for res in results.values():
+        ts = pd.to_datetime(res.timestamps)
+        if len(ts) == 0:
+            continue
+        starts.append(ts.min())
+        ends.append(ts.max())
+    if not starts or not ends:
+        return None, None
+    # Use the latest first timestamp as the shared anchor (prevents early-start curves from getting padded)
+    common_start = max(starts)
+    common_end = min(ends)
+    if common_start >= common_end:
+        return None, None
+    return common_start, common_end
+
+
 def plot_results(results: Dict[str, Any], benchmark_series: Optional[pd.Series]) -> None:
+    # Determine a common period to normalize across all strategies
+    common_start, common_end = determine_common_period(results)
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Plot each strategy
     union_index = None
     for name, res in results.items():
-        s = normalized_series(res.portfolio_values, res.timestamps)
-        if union_index is None:
-            union_index = s.index
-        else:
-            union_index = union_index.union(s.index).sort_values()
+        s = common_normalized_series(res, common_start, common_end) if common_start is not None else normalized_series(res.portfolio_values, res.timestamps)
+        if s.empty:
+            continue
+        union_index = s.index if union_index is None else union_index.union(s.index).sort_values()
         s_plot = s.reindex(union_index, method="pad")
         ax.plot(s_plot.index, s_plot.values, label=f"{name} (Cum: {(s_plot.iloc[-1]-1):.2%})", linewidth=2)
 
-    # Plot benchmark aligned to union index
-    if benchmark_series is not None and len(benchmark_series) > 1:
-        bench_plot = benchmark_series.reindex(union_index, method="pad")
-        ax.plot(
-            bench_plot.index,
-            bench_plot.values,
-            label=f"{'Benchmark'} ({bench_plot.name if bench_plot.name else ''}) (Cum: {(bench_plot.iloc[-1]-1):.2%})",
-            linewidth=2,
-            color="#ff7f0e",
-        )
+    # Plot benchmark aligned to the same common period
+    if benchmark_series is not None and (common_start is not None):
+        bench = benchmark_series[(benchmark_series.index >= common_start) & (benchmark_series.index <= common_end)]
+        if len(bench) > 1:
+            bench = bench / bench.iloc[0]
+            union_index = union_index.union(bench.index).sort_values() if union_index is not None else bench.index
+            bench_plot = bench.reindex(union_index, method="pad")
+            ax.plot(
+                bench_plot.index,
+                bench_plot.values,
+                label=f"Benchmark ({bench_plot.name if bench_plot.name else ''}) (Cum: {(bench_plot.iloc[-1]-1):.2%})",
+                linewidth=2,
+                color="#ff7f0e",
+            )
 
     # Drawdown shading using the first strategy as reference, if available
-    if results:
+    if results and union_index is not None:
         first_name = next(iter(results.keys()))
-        first_series = normalized_series(results[first_name].portfolio_values, results[first_name].timestamps)
-        first_series = first_series.reindex(union_index, method="pad")
-        running_max = first_series.cummax()
+        ref = common_normalized_series(results[first_name], common_start, common_end) if common_start is not None else normalized_series(results[first_name].portfolio_values, results[first_name].timestamps)
+        ref = ref.reindex(union_index, method="pad")
+        running_max = ref.cummax()
         ax.fill_between(
-            first_series.index,
-            first_series.values,
+            ref.index,
+            ref.values,
             running_max.values,
-            where=(first_series.values < running_max.values),
+            where=(ref.values < running_max.values),
             color="#1f77b4",
             alpha=0.10,
             interpolate=True,
@@ -306,10 +349,94 @@ def plot_results(results: Dict[str, Any], benchmark_series: Optional[pd.Series])
         period_str = f"{pd.to_datetime(any_res.start_date).date()} to {pd.to_datetime(any_res.end_date).date()}"
     else:
         period_str = ""
-    ax.set_title(f"Strategy Comparison vs Benchmark (Normalized to 1.0) {period_str}")
+    ax.set_title(f"Strategy Comparison vs Benchmark (Common-normalized) {period_str}")
     ax.set_ylabel("Growth of $1")
     ax.set_xlabel("Date")
     ax.legend(loc="best", frameon=True)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+
+
+# -----------------------------
+# Allocation plotting
+# -----------------------------
+
+def extract_allocations(res: Any) -> Optional[pd.DataFrame]:
+    """
+    Attempt to extract allocation weights over time from StrategyResult/BacktestResult.
+    Expected attributes:
+        - res.weights_timestamps: list[datetime]
+        - res.weights_series: list[dict[str, float]] or list[pd.Series]
+    This is a standardized interface assumption; if your backtester uses different names,
+    adjust the accessors below.
+    Returns a DataFrame indexed by timestamps, columns = symbols, values = weights (0..1).
+    """
+    # Try common possibilities
+    timestamps = getattr(res, "weights_timestamps", None)
+    series_list = getattr(res, "weights_series", None)
+
+    if timestamps is None or series_list is None:
+        # Fallback: if res has 'allocations' with list of dicts
+        allocations = getattr(res, "allocations", None)
+        if allocations and isinstance(allocations, list) and all(isinstance(a, dict) for a in allocations):
+            timestamps = [pd.to_datetime(a.get("timestamp")) for a in allocations]
+            series_list = [a.get("weights") for a in allocations]
+
+    if timestamps is None or series_list is None:
+        return None
+
+    ts = pd.to_datetime(timestamps)
+    frames = []
+    cols = set()
+    for item in series_list:
+        if isinstance(item, dict):
+            s = pd.Series(item)
+        elif isinstance(item, pd.Series):
+            s = item
+        else:
+            continue
+        cols.update(s.index)
+        frames.append(s)
+    if not frames:
+        return None
+
+    cols = sorted(list(cols))
+    df = pd.DataFrame([s.reindex(cols).fillna(0.0) for s in frames], index=ts)
+    # Normalize each row to sum to 1.0 just in case
+    row_sums = df.sum(axis=1).replace(0, np.nan)
+    df = df.div(row_sums, axis=0).fillna(0.0)
+    return df
+
+
+def plot_allocation_stack(df_alloc: pd.DataFrame, title: str, max_cols: int = 12) -> None:
+    if df_alloc is None or df_alloc.empty:
+        print(f"[INFO] No allocation data to plot for {title}")
+        return
+    # Limit columns for readability
+    cols = list(df_alloc.columns)
+    if len(cols) > max_cols:
+        # Take top N by average weight
+        avg = df_alloc.mean().sort_values(ascending=False)
+        top_cols = list(avg.iloc[:max_cols].index)
+        other_cols = [c for c in cols if c not in top_cols]
+        df_top = df_alloc[top_cols].copy()
+        if other_cols:
+            df_top["OTHER"] = df_alloc[other_cols].sum(axis=1)
+        dfp = df_top
+    else:
+        dfp = df_alloc
+
+    # Ensure monotonic index
+    dfp = dfp.sort_index()
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.stackplot(dfp.index, dfp.T.values, labels=dfp.columns, alpha=0.85)
+    ax.set_title(f"Allocation Over Time - {title}")
+    ax.set_ylabel("Portfolio Weight")
+    ax.set_xlabel("Date")
+    ax.set_ylim(0, 1)
+    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5), frameon=True, ncol=1)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
     plt.tight_layout()
     plt.show()
@@ -346,8 +473,14 @@ def main():
         # Name for legend context
         bench_series.name = bt_cfg.benchmark
 
-    # Plot
+    # Plot equity curves with common normalization period
     plot_results(results, bench_series)
+
+    # Allocation charts per strategy
+    if defaults.plot_allocations:
+        for name, res in results.items():
+            alloc_df = extract_allocations(res)
+            plot_allocation_stack(alloc_df, title=name, max_cols=defaults.allocation_max_cols)
 
     # Ending normalized values quick glance
     print("Ending normalized values:")
