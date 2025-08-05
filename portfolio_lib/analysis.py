@@ -134,7 +134,9 @@ print(
 )
 
 # 9) Plot equity curve with benchmark (normalized) and drawdown shading
-pv = pd.Series(result.portfolio_values, index=pd.to_datetime(result.timestamps)).sort_index()
+pv = pd.Series(
+    result.portfolio_values, index=pd.to_datetime(result.timestamps)
+).sort_index()
 
 # Compute normalized equity curve starting at 1.0
 if len(pv) == 0 or not np.isfinite(pv.iloc[0]) or pv.iloc[0] == 0:
@@ -147,23 +149,44 @@ if bt_cfg.benchmark in price_history:
     bench_df = price_history[bt_cfg.benchmark]
     bench_prices = bench_df["close"]
 
-    # Filter to backtest period
-    start_bound = pd.Timestamp(bt_cfg.start_date)
-    end_bound = pd.Timestamp(bt_cfg.end_date)
+    # Ensure all datetimes are tz-naive for comparison
+    # Some data providers return tz-aware indices (e.g., America/New_York)
+    if (
+        isinstance(bench_prices.index, pd.DatetimeIndex)
+        and bench_prices.index.tz is not None
+    ):
+        bench_prices = bench_prices.tz_localize(None)
+
+    # Filter to backtest period with tz-naive bounds
+    start_bound = pd.Timestamp(bt_cfg.start_date).tz_localize(None)
+    end_bound = pd.Timestamp(bt_cfg.end_date).tz_localize(None)
     mask = (bench_prices.index >= start_bound) & (bench_prices.index <= end_bound)
     bench_prices_filtered = bench_prices[mask]
 
-    if isinstance(bench_prices_filtered, pd.Series) and bench_prices_filtered.shape[0] > 1:
+    if (
+        isinstance(bench_prices_filtered, pd.Series)
+        and bench_prices_filtered.shape[0] > 1
+    ):
         # Align benchmark to portfolio timeline for fair comparison
         bench_aligned = bench_prices_filtered.reindex(pv.index, method="pad").dropna()
-        if len(bench_aligned) > 1 and bench_aligned.iloc[0] != 0 and np.isfinite(bench_aligned.iloc[0]):
+        if (
+            len(bench_aligned) > 1
+            and bench_aligned.iloc[0] != 0
+            and np.isfinite(bench_aligned.iloc[0])
+        ):
             bench_series = bench_aligned / bench_aligned.iloc[0]
 
 # Create figure
 fig, ax = plt.subplots(figsize=(12, 6))
 
 # Plot strategy normalized equity
-ax.plot(pv_norm.index, pv_norm.values, label=f"{result.strategy_name} (CumReturn: {(pv_norm.iloc[-1]-1):.2%})", linewidth=2, color="#1f77b4")
+ax.plot(
+    pv_norm.index,
+    pv_norm.values,
+    label=f"{result.strategy_name} (CumReturn: {(pv_norm.iloc[-1]-1):.2%})",
+    linewidth=2,
+    color="#1f77b4",
+)
 
 # Plot benchmark if available
 if bench_series is not None and len(bench_series) > 1:
