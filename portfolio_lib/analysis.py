@@ -7,6 +7,7 @@ from portfolio_lib.models.strategy import BacktestConfig, StrategyConfig
 from portfolio_lib.services.backtesting.backtester import BacktestingService
 from portfolio_lib.services.data.yfinance import YFinanceDataService
 from portfolio_lib.services.strategy.bollinger import BollingerAttractivenessStrategy
+from portfolio_lib.services.strategy.momentum import MomentumStrategy
 
 # 1) Universe: pick a Nasdaq-heavy basket (example subset of Nasdaq-100)
 symbols = [
@@ -95,13 +96,9 @@ if len(symbols_valid) < 3:
 capital_per = bt_cfg.initial_capital / len(symbols_valid)
 initial_holdings = {s: capital_per / start_prices[s] for s in symbols_valid}
 
-# 6) Configure the Momentum strategy
-# Parameters:
-# - lookback_period: number of days to compute momentum
-# - top_n: hold the top N momentum names equally
-# - rebalance_frequency: 'daily'|'weekly'|'monthly'|'quarterly' (backtester rebalances on this cadence)
-strategy = BollingerAttractivenessStrategy()
-st_cfg = StrategyConfig(
+# 6) Configure strategies
+bollinger_strategy = BollingerAttractivenessStrategy()
+bollinger_cfg = StrategyConfig(
     name="Bollinger",
     parameters={"lookback_period": 90, "top_n": 5},
     rebalance_frequency="monthly",
@@ -109,39 +106,66 @@ st_cfg = StrategyConfig(
     max_position_size=1.0,
 )
 
-# 7) Run backtest
-result = backtester.run_backtest(
-    strategy=strategy,
-    strategy_config=st_cfg,
+momentum_strategy = MomentumStrategy()
+# Keep momentum simple and minimal; share same rebalance cadence
+momentum_cfg = StrategyConfig(
+    name="Momentum",
+    parameters={"lookback_period": 90, "top_n": 5},
+    rebalance_frequency="monthly",
+    risk_tolerance=0.5,
+    max_position_size=1.0,
+)
+
+# 7) Run backtests
+bollinger_result = backtester.run_backtest(
+    strategy=bollinger_strategy,
+    strategy_config=bollinger_cfg,
+    backtest_config=bt_cfg,
+    initial_holdings=initial_holdings,
+)
+momentum_result = backtester.run_backtest(
+    strategy=momentum_strategy,
+    strategy_config=momentum_cfg,
     backtest_config=bt_cfg,
     initial_holdings=initial_holdings,
 )
 
-# 8) Metrics
-print("Strategy:", result.strategy_name)
-print("Period:", result.start_date.date(), "to", result.end_date.date())
-print(f"Total Return: {result.total_return:.2%}")
-print(f"Annualized Return: {result.annualized_return:.2%}")
-print(f"Volatility: {result.volatility:.2%}")
-print(f"Sharpe Ratio: {result.sharpe_ratio:.2f}")
-print(f"Max Drawdown: {result.max_drawdown:.2%}")
-print(f"Benchmark (QQQ) Return: {result.benchmark_return:.2%}")
-print(
-    "Trades - total/wins/loses:",
-    result.total_trades,
-    result.winning_trades,
-    result.losing_trades,
+# 8) Metrics summary
+def print_metrics(title, res):
+    print(f"=== {title} ===")
+    print("Strategy:", res.strategy_name)
+    print("Period:", res.start_date.date(), "to", res.end_date.date())
+    print(f"Total Return: {res.total_return:.2%}")
+    print(f"Annualized Return: {res.annualized_return:.2%}")
+    print(f"Volatility: {res.volatility:.2%}")
+    print(f"Sharpe Ratio: {res.sharpe_ratio:.2f}")
+    print(f"Max Drawdown: {res.max_drawdown:.2%}")
+    print(f"Benchmark (QQQ) Return: {res.benchmark_return:.2%}")
+    if hasattr(res, "total_trades"):
+        print(
+            "Trades - total/wins/loses:",
+            res.total_trades,
+            getattr(res, "winning_trades", 0),
+            getattr(res, "losing_trades", 0),
+        )
+    print()
+
+print_metrics("Bollinger", bollinger_result)
+print_metrics("Momentum", momentum_result)
+
+# 9) Build normalized equity series
+def norm_equity(values, timestamps):
+    s = pd.Series(values, index=pd.to_datetime(timestamps)).sort_index()
+    if len(s) == 0 or not np.isfinite(s.iloc[0]) or s.iloc[0] == 0:
+        raise RuntimeError("Invalid portfolio values for plotting.")
+    return s / s.iloc[0], s
+
+bollinger_norm, bollinger_pv = norm_equity(
+    bollinger_result.portfolio_values, bollinger_result.timestamps
 )
-
-# 9) Plot equity curve with benchmark (normalized) and drawdown shading
-pv = pd.Series(
-    result.portfolio_values, index=pd.to_datetime(result.timestamps)
-).sort_index()
-
-# Compute normalized equity curve starting at 1.0
-if len(pv) == 0 or not np.isfinite(pv.iloc[0]) or pv.iloc[0] == 0:
-    raise RuntimeError("Invalid portfolio values for plotting.")
-pv_norm = pv / pv.iloc[0]
+momentum_norm, momentum_pv = norm_equity(
+    momentum_result.portfolio_values, momentum_result.timestamps
+)
 
 # Benchmark via price history fallback (minimal dependency on BacktestResult internals)
 bench_series = None
@@ -150,7 +174,6 @@ if bt_cfg.benchmark in price_history:
     bench_prices = bench_df["close"]
 
     # Ensure all datetimes are tz-naive for comparison
-    # Some data providers return tz-aware indices (e.g., America/New_York)
     if (
         isinstance(bench_prices.index, pd.DatetimeIndex)
         and bench_prices.index.tz is not None
@@ -167,8 +190,9 @@ if bt_cfg.benchmark in price_history:
         isinstance(bench_prices_filtered, pd.Series)
         and bench_prices_filtered.shape[0] > 1
     ):
-        # Align benchmark to portfolio timeline for fair comparison
-        bench_aligned = bench_prices_filtered.reindex(pv.index, method="pad").dropna()
+        # Align benchmark to timeline (use Bollinger's index as reference)
+        ref_index = bollinger_norm.index.union(momentum_norm.index).sort_values()
+        bench_aligned = bench_prices_filtered.reindex(ref_index, method="pad").dropna()
         if (
             len(bench_aligned) > 1
             and bench_aligned.iloc[0] != 0
@@ -176,59 +200,74 @@ if bt_cfg.benchmark in price_history:
         ):
             bench_series = bench_aligned / bench_aligned.iloc[0]
 
-# Create figure
+# 10) Plot strategies vs benchmark
 fig, ax = plt.subplots(figsize=(12, 6))
 
-# Plot strategy normalized equity
 ax.plot(
-    pv_norm.index,
-    pv_norm.values,
-    label=f"{result.strategy_name} (CumReturn: {(pv_norm.iloc[-1]-1):.2%})",
+    bollinger_norm.index,
+    bollinger_norm.values,
+    label=f"Bollinger (Cum: {(bollinger_norm.iloc[-1]-1):.2%})",
     linewidth=2,
     color="#1f77b4",
 )
+ax.plot(
+    momentum_norm.index,
+    momentum_norm.values,
+    label=f"Momentum (Cum: {(momentum_norm.iloc[-1]-1):.2%})",
+    linewidth=2,
+    color="#2ca02c",
+)
 
-# Plot benchmark if available
 if bench_series is not None and len(bench_series) > 1:
-    # Reindex again to ensure aligned with pv_norm for plotting and legend cumulative return
-    bench_plot = bench_series.reindex(pv_norm.index, method="pad")
+    # Reindex again to ensure aligned with union of strategy indices
+    ref_index = bollinger_norm.index.union(momentum_norm.index).sort_values()
+    bench_plot = bench_series.reindex(ref_index, method="pad")
     ax.plot(
         bench_plot.index,
         bench_plot.values,
-        label=f"{bt_cfg.benchmark} (CumReturn: {(bench_plot.iloc[-1]-1):.2%})",
+        label=f"{bt_cfg.benchmark} (Cum: {(bench_plot.iloc[-1]-1):.2%})",
         linewidth=2,
         color="#ff7f0e",
     )
 
-# Drawdown shading for portfolio to make risk periods visible
-# Compute running max on normalized curve
-running_max = pv_norm.cummax()
-drawdown = (pv_norm - running_max) / running_max
-# Shade where drawdown < 0
+# Drawdown shading based on the better performing strategy at each time for more context
+# Choose Bollinger as default reference for shading
+ref_norm = bollinger_norm.reindex(
+    bollinger_norm.index.union(momentum_norm.index).sort_values(), method="pad"
+)
+running_max = ref_norm.cummax()
 ax.fill_between(
-    pv_norm.index,
-    pv_norm.values,
+    ref_norm.index,
+    ref_norm.values,
     running_max.values,
-    where=(pv_norm.values < running_max.values),
+    where=(ref_norm.values < running_max.values),
     color="#1f77b4",
     alpha=0.10,
     interpolate=True,
     label="_ddshade",
 )
 
-# Title and labels
-period_str = f"{pd.to_datetime(result.start_date).date()} to {pd.to_datetime(result.end_date).date()}"
-ax.set_title(f"Portfolio vs Benchmark (Normalized to 1.0) — {period_str}")
+period_str = f"{pd.to_datetime(bollinger_result.start_date).date()} to {pd.to_datetime(bollinger_result.end_date).date()}"
+ax.set_title(f"Strategy Comparison vs Benchmark (Normalized to 1.0) — {period_str}")
 ax.set_ylabel("Growth of $1")
 ax.set_xlabel("Date")
 
-# Legend and grid
 ax.legend(loc="best", frameon=True)
 ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
 
-# Improve layout
 plt.tight_layout()
 plt.show()
 
+# Optional: print ending values for quick glance
+print("Ending normalized values:")
+print(
+    "Bollinger:",
+    round(float(bollinger_norm.iloc[-1]), 4),
+    "Momentum:",
+    round(float(momentum_norm.iloc[-1]), 4),
+    "Benchmark:",
+    round(float(bench_series.iloc[-1]), 4) if bench_series is not None else "n/a",
+)
+
 # %%
-result.portfolio_values
+bollinger_result.portfolio_values
