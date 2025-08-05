@@ -7,6 +7,12 @@ Unified analysis runner:
 - Runs backtests for each discovered strategy with minimal repeated code.
 - Produces a comparison plot vs benchmark and prints key metrics.
 - Provides standardized allocation charts for each strategy at each rebalance interval.
+- Plots executed trades with FIFO PnL annotations.
+
+Notes:
+- Trade.quantity is interpreted by the backtester as a weight fraction (0..1) of the
+  portfolio value at each rebalance. This script expects executed_trades emitted by the
+  backtester and will plot them if available.
 
 Usage:
     python -m portfolio_lib.analysis
@@ -46,14 +52,12 @@ class AnalysisDefaults:
     risk_tolerance: float
     max_position_size: float
     strategy_overrides: Dict[str, Dict[str, Any]]
-    plot_allocations: bool = True  # new: whether to render allocation charts
-    allocation_max_cols: int = (
-        12  # cap symbols shown in allocation chart for readability
-    )
+    plot_allocations: bool = True  # whether to render allocation charts
+    allocation_max_cols: int = 12  # cap symbols shown in allocation chart for readability
 
 
 def default_settings() -> AnalysisDefaults:
-    # Reasonable defaults for Nasdaq-heavy backtest
+    # Reasonable defaults for a diversified tech-heavy backtest
     symbols = [
         "AAPL",
         "MSFT",
@@ -86,11 +90,11 @@ def default_settings() -> AnalysisDefaults:
         rebalance_frequency="monthly",
         risk_tolerance=0.5,
         max_position_size=1.0,
-        # Optional per-strategy parameter overrides by class name or strategy name
+        # Optional per-strategy parameter overrides by class name or strategy display name
         strategy_overrides={
-            # Examples:
             # "BollingerAttractivenessStrategy": {"bb_period": 20, "bb_std": 2.0, "adjustment_factor": 0.2},
-            # "MomentumStrategy": {"lookback_period": 90, "top_n": 5},
+            # "Momentum": {"lookback_period": 90, "top_n": 5},
+            # "ML Attractiveness (Momentum + Vol Change + Bollinger)": {"adjustment_factor": 0.25},
         },
         plot_allocations=True,
         allocation_max_cols=12,
@@ -120,11 +124,11 @@ def discover_strategies() -> List[BaseStrategy]:
             continue
         for _, obj in inspect.getmembers(mod, inspect.isclass):
             # Must inherit BaseStrategy and be defined in this module
-            if (
-                issubclass(obj, BaseStrategy)
-                and obj is not BaseStrategy
-                and obj.__module__ == mod.__name__
-            ):
+            try:
+                cond = issubclass(obj, BaseStrategy) and obj is not BaseStrategy
+            except Exception:
+                cond = False
+            if cond and obj.__module__ == mod.__name__:
                 try:
                     instance = obj()
                     strategies.append(instance)
@@ -170,6 +174,14 @@ def fetch_aligned_price_history(
     )
     if not price_history:
         raise RuntimeError("No price data returned. Check internet, symbols, or dates.")
+
+    # Normalize indices to tz-naive to align with backtester assumptions
+    for sym, df in list(price_history.items()):
+        try:
+            if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+                price_history[sym] = df.tz_localize(None)
+        except Exception:
+            pass
     return price_history
 
 
@@ -221,7 +233,7 @@ def run_backtests_for_strategies(
     defaults: AnalysisDefaults,
     data_service: YFinanceDataService,
     backtester: BacktestingService,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, pd.DataFrame], BacktestConfig]:
     bt_cfg = build_backtest_config(defaults)
 
     # Fetch once: universe + benchmark
@@ -237,8 +249,11 @@ def run_backtests_for_strategies(
     for strategy in strategies:
         s_name = getattr(strategy, "name", strategy.__class__.__name__)
         # Build per-strategy config merging defaults and overrides
-        override_params = defaults.strategy_overrides.get(
-            strategy.__class__.__name__, {}
+        # Use overrides by class name first, then by display name for convenience
+        override_params = (
+            defaults.strategy_overrides.get(strategy.__class__.__name__)
+            or defaults.strategy_overrides.get(s_name)
+            or {}
         )
         # StrategyConfig.parameters is a free-form dict
         strat_cfg = StrategyConfig(
@@ -275,11 +290,12 @@ def print_metrics(title: str, res: Any) -> None:
     print(f"Volatility: {res.volatility:.2%}")
     print(f"Sharpe Ratio: {res.sharpe_ratio:.2f}")
     print(f"Max Drawdown: {res.max_drawdown:.2%}")
-    print(f"Benchmark ({getattr(res, 'benchmark', 'N/A')}): {res.benchmark_return:.2%}")
+    bench_name = getattr(getattr(res, "config", None), "benchmark", "Benchmark")
+    print(f"Benchmark ({bench_name}): {res.benchmark_return:.2%}")
     if hasattr(res, "total_trades"):
         print(
             "Trades - total/wins/loses:",
-            res.total_trades,
+            getattr(res, "total_trades", 0),
             getattr(res, "winning_trades", 0),
             getattr(res, "losing_trades", 0),
         )
@@ -323,14 +339,15 @@ def build_benchmark_series(
 
 def common_normalized_series(
     res: Any,
-    common_start: pd.Timestamp,
-    common_end: pd.Timestamp,
+    common_start: Optional[pd.Timestamp],
+    common_end: Optional[pd.Timestamp],
 ) -> pd.Series:
     """Normalize a strategy's equity curve to 1.0 at the common_start date."""
     s = pd.Series(
         res.portfolio_values, index=pd.to_datetime(res.timestamps)
     ).sort_index()
-    s = s[(s.index >= common_start) & (s.index <= common_end)]
+    if common_start is not None and common_end is not None:
+        s = s[(s.index >= common_start) & (s.index <= common_end)]
     if s.empty:
         return pd.Series(dtype=float)
     # Normalize at the first value on/after common_start
@@ -369,11 +386,7 @@ def plot_results(
     norm_curves: Dict[str, pd.Series] = {}
     union_index = None
     for name, res in results.items():
-        s = (
-            common_normalized_series(res, common_start, common_end)
-            if common_start is not None
-            else normalized_series(res.portfolio_values, res.timestamps)
-        )
+        s = common_normalized_series(res, common_start, common_end)
         if s.empty:
             continue
         union_index = (
@@ -383,7 +396,7 @@ def plot_results(
 
     # Prepare benchmark aligned to common period
     bench_plot = None
-    if benchmark_series is not None and (common_start is not None):
+    if benchmark_series is not None and (common_start is not None and common_end is not None):
         bench = benchmark_series[
             (benchmark_series.index >= common_start)
             & (benchmark_series.index <= common_end)
@@ -492,8 +505,6 @@ def extract_allocations(res: Any) -> Optional[pd.DataFrame]:
     Expected attributes:
         - res.weights_timestamps: list[datetime]
         - res.weights_series: list[dict[str, float]] or list[pd.Series]
-    This is a standardized interface assumption; if your backtester uses different names,
-    adjust the accessors below.
     Returns a DataFrame indexed by timestamps, columns = symbols, values = weights (0..1).
     """
     # Try common possibilities
@@ -610,7 +621,7 @@ def plot_trade_markers(
 
     Assumptions:
       - res.executed_trades: List[Dict] with keys:
-          symbol, action ('buy'/'sell'), quantity, price, timestamp, reason (optional)
+          symbol, action ('buy'/'sell'), quantity_shares, price, timestamp, reason (optional)
       - price_history: Dict[str, DataFrame] with a 'close' column per symbol
       - Use the strategy's top-weighted symbol price history if available, otherwise benchmark if present
     """
@@ -653,7 +664,7 @@ def plot_trade_markers(
 
         for t in trds:
             action = t.get("action")
-            qty = float(t.get("quantity") or 0.0)
+            qty = float(t.get("quantity_shares") or t.get("quantity") or 0.0)
             price = float(t.get("price") or 0.0)
             realized_pnl = 0.0
             realized_pnl_per_share = 0.0
@@ -793,11 +804,11 @@ def plot_trade_markers(
                         y = None
             # Build hover text with PnL annotations
             reason = t.get("reason") or ""
-            qty = float(t.get("quantity") or 0.0)
-            gross = t.get("gross_value")
-            commission = t.get("commission")
-            slippage = t.get("slippage")
-            total_cost = t.get("total_cost")
+            qty = float(t.get("quantity_shares") or t.get("quantity") or 0.0)
+            gross = float(t.get("gross_value") or 0.0)
+            commission = float(t.get("commission") or 0.0)
+            slippage = float(t.get("slippage") or 0.0)
+            total_cost = float(t.get("total_cost") or 0.0)
             pos_after = float(t.get("position_after") or 0.0)
             avg_cost_after = float(t.get("avg_cost_after") or 0.0)
             realized_pnl = float(t.get("realized_pnl") or 0.0)
@@ -805,7 +816,7 @@ def plot_trade_markers(
             base = (
                 f"{sym} {t.get('action','').upper()}<br>"
                 f"Time: {pd.to_datetime(ts).strftime('%Y-%m-%d %H:%M:%S')}<br>"
-                f"Qty: {qty:.4f}  Price: {float(y) if y is not None else float('nan'):.2f}<br>"
+                f"Qty(sh): {qty:.4f}  Price: {float(y) if y is not None else float('nan'):.2f}<br>"
                 f"Gross: {gross:.2f}  Comm: {commission:.2f}  Slip: {slippage:.2f}  TxnCost: {total_cost:.2f}<br>"
             )
             if t.get("action") == "buy":
