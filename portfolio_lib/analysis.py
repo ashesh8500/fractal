@@ -133,39 +133,77 @@ print(
     result.losing_trades,
 )
 
-# 9) Plot equity curve with benchmark
-pv = pd.Series(result.portfolio_values, index=pd.to_datetime(result.timestamps))
-pv = pv.sort_index()
-fig, ax = plt.subplots(figsize=(12, 6))
-pv.plot(ax=ax, label=f"{result.strategy_name} Portfolio", linewidth=2)
+# 9) Plot equity curve with benchmark (normalized) and drawdown shading
+pv = pd.Series(result.portfolio_values, index=pd.to_datetime(result.timestamps)).sort_index()
 
-# Plot benchmark if available
-# Remove reliance on unknown BacktestResult attributes; use fallback from price history
+# Compute normalized equity curve starting at 1.0
+if len(pv) == 0 or not np.isfinite(pv.iloc[0]) or pv.iloc[0] == 0:
+    raise RuntimeError("Invalid portfolio values for plotting.")
+pv_norm = pv / pv.iloc[0]
+
+# Benchmark via price history fallback (minimal dependency on BacktestResult internals)
+bench_series = None
 if bt_cfg.benchmark in price_history:
     bench_df = price_history[bt_cfg.benchmark]
     bench_prices = bench_df["close"]
+
     # Filter to backtest period
     start_bound = pd.Timestamp(bt_cfg.start_date)
     end_bound = pd.Timestamp(bt_cfg.end_date)
     mask = (bench_prices.index >= start_bound) & (bench_prices.index <= end_bound)
     bench_prices_filtered = bench_prices[mask]
 
-    if (
-        isinstance(bench_prices_filtered, pd.Series)
-        and bench_prices_filtered.shape[0] > 1
-    ):
-        # Normalize to start at 1 for comparison
-        first_val = float(bench_prices_filtered.iloc[0])
-        if np.isfinite(first_val) and first_val != 0:
-            bench_normalized = bench_prices_filtered / first_val
-            bench_series = pd.Series(
-                bench_normalized.values, index=bench_prices_filtered.index
-            )
-            bench_series.plot(ax=ax, label="Benchmark (QQQ)", linewidth=2)
+    if isinstance(bench_prices_filtered, pd.Series) and bench_prices_filtered.shape[0] > 1:
+        # Align benchmark to portfolio timeline for fair comparison
+        bench_aligned = bench_prices_filtered.reindex(pv.index, method="pad").dropna()
+        if len(bench_aligned) > 1 and bench_aligned.iloc[0] != 0 and np.isfinite(bench_aligned.iloc[0]):
+            bench_series = bench_aligned / bench_aligned.iloc[0]
 
-ax.set_title("Portfolio Value vs Benchmark")
-ax.legend()
-ax.grid(True)
+# Create figure
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Plot strategy normalized equity
+ax.plot(pv_norm.index, pv_norm.values, label=f"{result.strategy_name} (CumReturn: {(pv_norm.iloc[-1]-1):.2%})", linewidth=2, color="#1f77b4")
+
+# Plot benchmark if available
+if bench_series is not None and len(bench_series) > 1:
+    # Reindex again to ensure aligned with pv_norm for plotting and legend cumulative return
+    bench_plot = bench_series.reindex(pv_norm.index, method="pad")
+    ax.plot(
+        bench_plot.index,
+        bench_plot.values,
+        label=f"{bt_cfg.benchmark} (CumReturn: {(bench_plot.iloc[-1]-1):.2%})",
+        linewidth=2,
+        color="#ff7f0e",
+    )
+
+# Drawdown shading for portfolio to make risk periods visible
+# Compute running max on normalized curve
+running_max = pv_norm.cummax()
+drawdown = (pv_norm - running_max) / running_max
+# Shade where drawdown < 0
+ax.fill_between(
+    pv_norm.index,
+    pv_norm.values,
+    running_max.values,
+    where=(pv_norm.values < running_max.values),
+    color="#1f77b4",
+    alpha=0.10,
+    interpolate=True,
+    label="_ddshade",
+)
+
+# Title and labels
+period_str = f"{pd.to_datetime(result.start_date).date()} to {pd.to_datetime(result.end_date).date()}"
+ax.set_title(f"Portfolio vs Benchmark (Normalized to 1.0) — {period_str}")
+ax.set_ylabel("Growth of $1")
+ax.set_xlabel("Date")
+
+# Legend and grid
+ax.legend(loc="best", frameon=True)
+ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
+# Improve layout
 plt.tight_layout()
 plt.show()
 
