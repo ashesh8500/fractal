@@ -217,6 +217,8 @@ class BacktestingService:
                         cash,
                         current_prices,
                         backtest_config,
+                        portfolio_value,
+                        current_date,
                     )
 
                     current_holdings = trade_stats["new_holdings"]
@@ -226,10 +228,7 @@ class BacktestingService:
                     losing_trades += trade_stats["losing_trades"]
 
                     # Accumulate executed trade metadata
-                    # Attach the current_date to any trades that were missing a timestamp
                     for t in trade_stats.get("executed", []):
-                        if t.get("timestamp") is None:
-                            t["timestamp"] = current_date
                         executed_trades.append(t)
 
                     last_rebalance_date = current_date
@@ -258,8 +257,15 @@ class BacktestingService:
         cash: float,
         current_prices: Dict[str, float],
         config: BacktestConfig,
+        portfolio_value: float,
+        trade_date,
     ) -> Dict:
-        """Execute trades and update portfolio state."""
+        """
+        Execute trades and update portfolio state.
+
+        IMPORTANT: Trade.quantity is interpreted as a WEIGHT FRACTION (0..1) of the
+        current portfolio value to allocate/deallocate for the given symbol at this rebalance.
+        """
         new_holdings = current_holdings.copy()
         new_cash = cash
         num_trades = 0
@@ -268,64 +274,82 @@ class BacktestingService:
         executed: List[Dict] = []
 
         for trade in trades:
-            if trade.symbol not in current_prices:
+            symbol = trade.symbol
+            if symbol not in current_prices:
                 continue
 
-            price = current_prices[trade.symbol]
-            trade_value = trade.quantity * price
+            price = float(current_prices[symbol])
+            if price <= 0.0:
+                continue
+
+            # Convert weight fraction -> dollar value to trade at this rebalance
+            # Clamp quantity to [0,1] just in case
+            weight_fraction = max(0.0, min(1.0, float(trade.quantity)))
+            dollar_value = weight_fraction * portfolio_value
+            if dollar_value <= 0.0:
+                continue
+
+            shares = dollar_value / price
+            trade_value = shares * price  # == dollar_value
             commission = trade_value * config.commission
             slippage = trade_value * config.slippage
             total_cost = commission + slippage
 
             if trade.action == TradeAction.BUY:
                 total_needed = trade_value + total_cost
-                if new_cash >= total_needed:
-                    new_holdings[trade.symbol] = (
-                        new_holdings.get(trade.symbol, 0) + trade.quantity
-                    )
+                if new_cash >= total_needed and shares > 0.0:
+                    new_holdings[symbol] = new_holdings.get(symbol, 0.0) + shares
                     new_cash -= total_needed
                     num_trades += 1
                     executed.append(
                         {
-                            "symbol": trade.symbol,
+                            "symbol": symbol,
                             "action": "buy",
-                            "quantity": float(trade.quantity),
+                            "quantity_shares": float(shares),
+                            "weight_fraction": float(weight_fraction),
                             "price": float(price),
                             "gross_value": float(trade_value),
                             "commission": float(commission),
                             "slippage": float(slippage),
                             "total_cost": float(total_cost),
                             "net_cash_delta": float(-total_needed),
-                            "timestamp": trade.timestamp,
-                            "reason": trade.reason,
+                            "timestamp": getattr(trade, "timestamp", None) or trade_date,
+                            "reason": getattr(trade, "reason", None),
                         }
                     )
 
             elif trade.action == TradeAction.SELL:
-                current_shares = new_holdings.get(trade.symbol, 0)
-                if current_shares >= trade.quantity:
-                    new_holdings[trade.symbol] = current_shares - trade.quantity
-                    proceeds = trade_value - total_cost
+                current_shares = float(new_holdings.get(symbol, 0.0))
+                shares_to_sell = min(current_shares, shares)
+                if shares_to_sell > 0.0:
+                    gross_value = shares_to_sell * price
+                    commission = gross_value * config.commission
+                    slippage = gross_value * config.slippage
+                    total_cost = commission + slippage
+                    proceeds = gross_value - total_cost
+
+                    new_holdings[symbol] = current_shares - shares_to_sell
                     new_cash += proceeds
                     num_trades += 1
                     executed.append(
                         {
-                            "symbol": trade.symbol,
+                            "symbol": symbol,
                             "action": "sell",
-                            "quantity": float(trade.quantity),
+                            "quantity_shares": float(shares_to_sell),
+                            "weight_fraction": float(weight_fraction),
                             "price": float(price),
-                            "gross_value": float(trade_value),
+                            "gross_value": float(gross_value),
                             "commission": float(commission),
                             "slippage": float(slippage),
                             "total_cost": float(total_cost),
                             "net_cash_delta": float(proceeds),
-                            "timestamp": trade.timestamp,
-                            "reason": trade.reason,
+                            "timestamp": getattr(trade, "timestamp", None) or trade_date,
+                            "reason": getattr(trade, "reason", None),
                         }
                     )
 
                     # Simple heuristic for winning/losing trades
-                    if proceeds > trade_value * 0.95:  # Rough breakeven after costs
+                    if proceeds > gross_value * 0.95:  # Rough breakeven after costs
                         winning_trades += 1
                     else:
                         losing_trades += 1
@@ -413,7 +437,6 @@ class BacktestingService:
         # Filter to backtest period using tz-naive date bounds
         start_bound = start_date
         end_bound = end_date
-        # Convert tz-aware to naive if needed (should be naive already, but guard anyway)
         try:
             if hasattr(start_bound, "tzinfo") and start_bound.tzinfo is not None:
                 start_bound = start_bound.replace(tzinfo=None)

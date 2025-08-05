@@ -279,16 +279,23 @@ class Portfolio:
         logger.info(f"Running strategy '{strategy_name}' on portfolio '{self.name}'")
         
         # Import here to avoid circular imports
-        from ..services.strategy import StrategyService, MomentumStrategy
+        from ..services.strategy import (
+            StrategyService,
+            MomentumStrategy,
+            BollingerAttractivenessStrategy,
+            MLAttractivenessStrategy,
+        )
         
         # Create strategy service and register available strategies
         strategy_service = StrategyService()
+        strategy_service.register_strategy("momentum", MomentumStrategy())
+        strategy_service.register_strategy("bollinger", BollingerAttractivenessStrategy())
+        strategy_service.register_strategy("ml_attractiveness", MLAttractivenessStrategy())
         
-        # Register built-in strategies
-        if strategy_name.lower() == "momentum":
-            strategy_service.register_strategy("momentum", MomentumStrategy())
-        else:
-            raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: ['momentum']")
+        key = strategy_name.lower()
+        available = strategy_service.get_available_strategies()
+        if key not in available:
+            raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: {available}")
         
         # Get required data
         price_history = self._get_price_history()
@@ -297,7 +304,7 @@ class Portfolio:
         
         # Execute strategy
         return strategy_service.execute_strategy(
-            strategy_name.lower(),
+            key,
             current_weights,
             price_history,
             current_prices,
@@ -318,23 +325,33 @@ class Portfolio:
         logger.info(f"Running backtest '{strategy_name}' on portfolio '{self.name}'")
         
         # Import here to avoid circular imports
-        from ..services.strategy import MomentumStrategy
-        from ..services.backtesting import BacktestingService
+        from ..services.strategy import (
+            MomentumStrategy,
+            BollingerAttractivenessStrategy,
+            MLAttractivenessStrategy,
+        )
+        from ..services.backtesting.backtester import BacktestingService
         from .strategy import StrategyConfig
         
-        # Create strategy instance
-        if strategy_name.lower() == "momentum":
-            strategy = MomentumStrategy()
-        else:
-            raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: ['momentum']")
+        # Strategy factory
+        strategy_key = strategy_name.lower()
+        strategy_factory = {
+            "momentum": MomentumStrategy,
+            "bollinger": BollingerAttractivenessStrategy,
+            "ml_attractiveness": MLAttractivenessStrategy,
+        }
+        if strategy_key not in strategy_factory:
+            raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: {list(strategy_factory.keys())}")
         
-        # Create strategy config from backtest config
+        strategy = strategy_factory[strategy_key]()
+        
+        # Create strategy config from backtest config parameters if available
         strategy_config = StrategyConfig(
-            name=strategy_name.lower(),
-            parameters={},  # Use default parameters
-            rebalance_frequency="monthly",  # Default rebalancing
-            risk_tolerance=0.1,
-            max_position_size=0.3
+            name=strategy_key,
+            parameters=getattr(config, "parameters", {}) or {},
+            rebalance_frequency=getattr(config, "rebalance_frequency", "monthly"),
+            risk_tolerance=getattr(config, "risk_tolerance", 0.1),
+            max_position_size=getattr(config, "max_position_size", 0.3)
         )
         
         # Create backtesting service

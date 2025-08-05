@@ -56,15 +56,18 @@ class MomentumStrategy(BaseStrategy):
         self.logger.info(f"Executing momentum strategy with lookback={lookback_period} days, selecting top {top_n} assets.")
 
         # 1. Calculate momentum for each asset
-        momentum_scores = {}
+        momentum_scores: Dict[str, float] = {}
         for symbol, history_df in price_history.items():
-            if len(history_df) >= lookback_period:
-                # Use closing prices for momentum calculation
+            if len(history_df) >= lookback_period and 'close' in history_df.columns:
                 close_prices = history_df['close']
-                momentum = (close_prices.iloc[-1] / close_prices.iloc[-lookback_period]) - 1
-                momentum_scores[symbol] = momentum
+                try:
+                    momentum = (close_prices.iloc[-1] / close_prices.iloc[-lookback_period]) - 1
+                except Exception:
+                    momentum = -1.0
+                momentum_scores[symbol] = float(momentum)
             else:
-                momentum_scores[symbol] = -1 # Not enough data, low score
+                # Not enough data, give a low score
+                momentum_scores[symbol] = -1.0
 
         # 2. Rank assets by momentum
         if not momentum_scores:
@@ -90,7 +93,7 @@ class MomentumStrategy(BaseStrategy):
                 target_weights[symbol] = 0.0
 
         # 4. Generate trades to rebalance to target weights
-        trades = self._generate_rebalance_trades(portfolio_weights, target_weights, current_prices)
+        trades = self._generate_rebalance_trades(portfolio_weights, target_weights)
 
         self.logger.info(f"Momentum strategy recommends {len(trades)} trades.")
 
@@ -107,41 +110,34 @@ class MomentumStrategy(BaseStrategy):
         self,
         current_weights: Dict[str, float],
         target_weights: Dict[str, float],
-        current_prices: Dict[str, float]
     ) -> List[Trade]:
-        """Compares current and target weights to generate trades."""
-        trades = []
+        """
+        Compares current and target weights to generate trades.
+        Trade.quantity here is a weight fraction (0..1) delta to apply.
+        """
+        trades: List[Trade] = []
         all_symbols = set(current_weights.keys()) | set(target_weights.keys())
 
-        # Assuming a total portfolio value of 1.0 for weight calculations
-        total_portfolio_value = 1.0 
-
         for symbol in all_symbols:
-            current_weight = current_weights.get(symbol, 0.0)
-            target_weight = target_weights.get(symbol, 0.0)
+            current_weight = float(current_weights.get(symbol, 0.0))
+            target_weight = float(target_weights.get(symbol, 0.0))
             weight_diff = target_weight - current_weight
 
-            if abs(weight_diff) > 1e-6: # Avoid tiny, insignificant trades
-                price = current_prices.get(symbol)
-                if not price or price <= 0:
-                    self.logger.warning(f"Cannot generate trade for {symbol} due to missing or invalid price.")
-                    continue
-
-                # Quantity is relative to total value; actual shares depend on portfolio size
-                quantity = (weight_diff * total_portfolio_value) / price
-
+            if abs(weight_diff) > 1e-6:  # Avoid tiny, insignificant trades
                 if weight_diff > 0:
                     action = TradeAction.BUY
                     reason = f"Increasing weight from {current_weight:.2%} to {target_weight:.2%} based on momentum."
+                    qty = weight_diff
                 else:
                     action = TradeAction.SELL
                     reason = f"Decreasing weight from {current_weight:.2%} to {target_weight:.2%} based on momentum."
-                
+                    qty = -weight_diff  # positive quantity
+
                 trades.append(Trade(
                     symbol=symbol,
                     action=action,
-                    quantity=abs(quantity),
-                    price=price,
+                    quantity=qty,  # weight fraction
+                    price=0.0,     # price filled by executor/backtester context
                     timestamp=datetime.now(),
                     reason=reason
                 ))
@@ -157,4 +153,3 @@ class MomentumStrategy(BaseStrategy):
             expected_return=0.0,
             confidence=0.0
         )
-
