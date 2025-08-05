@@ -33,6 +33,7 @@ fractal/
 - Contains all financial logic and computations
 - Can be used independently in Jupyter notebooks, scripts, or other applications
 - Fully testable in isolation
+- First-class interactive analytics via Plotly with allocation, trade, and benchmark overlays
 
 ### Directory Structure
 ```
@@ -84,6 +85,17 @@ portfolio_lib/
 ```
 
 ### Key Classes and Interfaces
+
+#### Charts Service Protocol
+- Provide a unified interface to render interactive analytics using Plotly.
+- Inputs: backtest and strategy result models.
+- Outputs: Plotly figures (equity curves vs benchmark, allocation stack, trade markers, drawdown).
+
+Example responsibilities:
+- Equity curve comparison with common-period normalization and benchmark overlay
+- Allocation stacked area over time with symbol capping and OTHER bucket
+- Trade entry/exit markers on price with tooltips showing PnL and sizing
+- Drawdown visualization and summary stats
 
 #### Portfolio Class
 ```python
@@ -358,6 +370,7 @@ shared/
 - [ ] Add strategy execution capabilities
 - [ ] Performance optimization
 - [ ] Comprehensive error handling
+- [ ] Plotly charts service parity with analysis notebook/script usage
 
 ### Phase 6: Polish & Testing
 - [ ] End-to-end testing

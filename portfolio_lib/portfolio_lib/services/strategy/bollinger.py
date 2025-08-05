@@ -1,7 +1,7 @@
 from typing import Dict, List, Tuple
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from portfolio_lib.models.strategy import StrategyConfig, StrategyResult
 from portfolio_lib.services.backtesting.backtester import Trade, TradeAction
@@ -29,13 +29,17 @@ class BollingerAttractivenessStrategy(BaseStrategy):
         # Hyperparameters (provide sensible defaults, overridable via config)
         bb_period = getattr(config, "bb_period", 20)
         bb_std = getattr(config, "bb_std", 2.0)
-        momentum_window = getattr(config, "momentum_window", 252)  # ~1y daily trading days
+        momentum_window = getattr(
+            config, "momentum_window", 252
+        )  # ~1y daily trading days
         vol_window = getattr(config, "vol_window", 252)
         adjust_factor = getattr(config, "adjustment_factor", 0.2)
         min_weight = getattr(config, "min_weight", 0.0)
         max_weight = getattr(config, "max_weight", 0.6)
         use_vol_momentum = getattr(config, "use_vol_momentum", True)
-        attractiveness_weight = getattr(config, "attractiveness_weight", 0.5)  # 0..1 to mix bollinger vs attractiveness
+        attractiveness_weight = getattr(
+            config, "attractiveness_weight", 0.5
+        )  # 0..1 to mix bollinger vs attractiveness
         initial_weights = getattr(config, "initial_weights", portfolio_weights)
 
         tickers = list(portfolio_weights.keys())
@@ -45,12 +49,18 @@ class BollingerAttractivenessStrategy(BaseStrategy):
 
         # Compute indicators:
         # 1) Bollinger %b using current price and recent history
-        pb_scores = self._compute_bollinger_pb(closes, current_prices, bb_period, bb_std)
+        pb_scores = self._compute_bollinger_pb(
+            closes, current_prices, bb_period, bb_std
+        )
 
         # 2) Volatility and momentum attractiveness (optional)
         if use_vol_momentum and len(closes) >= max(momentum_window, vol_window) // 2:
-            vol_change, momentum_change = self._compute_vol_and_momentum_changes(closes, vol_window, momentum_window)
-            attractiveness = self._calculate_attractiveness(vol_change, momentum_change)  # product form
+            vol_change, momentum_change = self._compute_vol_and_momentum_changes(
+                closes, vol_window, momentum_window
+            )
+            attractiveness = self._calculate_attractiveness(
+                vol_change, momentum_change
+            )  # product form
             # Normalize attractiveness to positive values; fall back if all non-positive or NaN
             attractiveness = self._normalize_series_safe(attractiveness, tickers)
         else:
@@ -61,7 +71,10 @@ class BollingerAttractivenessStrategy(BaseStrategy):
         bollinger_pref = self._normalize_series_safe(bollinger_pref, tickers)
 
         # 4) Blend attractiveness with bollinger preference
-        combined_scores = attractiveness_weight * bollinger_pref + (1.0 - attractiveness_weight) * attractiveness
+        combined_scores = (
+            attractiveness_weight * bollinger_pref
+            + (1.0 - attractiveness_weight) * attractiveness
+        )
         combined_scores = self._normalize_series_safe(combined_scores, tickers)
 
         # 5) Convert scores to target weights
@@ -74,13 +87,21 @@ class BollingerAttractivenessStrategy(BaseStrategy):
         # 7) Normalize and clip weights, then renormalize
         target_weights = self._normalize_dict(target_weights)
         target_weights_series = pd.Series(target_weights).reindex(tickers).fillna(0.0)
-        target_weights_series = self._clip_weights(target_weights_series, min_weight=min_weight, max_weight=max_weight)
+        target_weights_series = self._clip_weights(
+            target_weights_series, min_weight=min_weight, max_weight=max_weight
+        )
         target_weights_series = self._renormalize_safe(target_weights_series)
 
         # 8) Blend with current weights using adjustment factor
-        current_w_series = pd.Series({t: portfolio_weights.get(t, 0.0) for t in tickers})
-        blended = (1.0 - adjust_factor) * current_w_series + adjust_factor * target_weights_series
-        blended = self._clip_weights(blended, min_weight=min_weight, max_weight=max_weight)
+        current_w_series = pd.Series(
+            {t: portfolio_weights.get(t, 0.0) for t in tickers}
+        )
+        blended = (
+            1.0 - adjust_factor
+        ) * current_w_series + adjust_factor * target_weights_series
+        blended = self._clip_weights(
+            blended, min_weight=min_weight, max_weight=max_weight
+        )
         blended = self._renormalize_safe(blended)
 
         # 9) Build trades based on delta
@@ -99,7 +120,9 @@ class BollingerAttractivenessStrategy(BaseStrategy):
             new_weights=blended.to_dict(),
         )
 
-    def _extract_closes(self, price_history: Dict[str, pd.DataFrame], tickers: List[str]) -> pd.DataFrame:
+    def _extract_closes(
+        self, price_history: Dict[str, pd.DataFrame], tickers: List[str]
+    ) -> pd.DataFrame:
         # Assumes each df has a 'close' or 'Close' column; will forward-fill and align
         series_list = []
         for t in tickers:
@@ -123,7 +146,11 @@ class BollingerAttractivenessStrategy(BaseStrategy):
         return closes
 
     def _compute_bollinger_pb(
-        self, closes: pd.DataFrame, current_prices: Dict[str, float], period: int, num_std: float
+        self,
+        closes: pd.DataFrame,
+        current_prices: Dict[str, float],
+        period: int,
+        num_std: float,
     ) -> pd.Series:
         tickers = list(closes.columns)
         pb = {}
@@ -146,15 +173,23 @@ class BollingerAttractivenessStrategy(BaseStrategy):
     ) -> Tuple[pd.Series, pd.Series]:
         returns = closes.pct_change()
         # Rolling volatility annualized-like (sqrt(252)) similar to reference, but windowed
-        vol = returns.rolling(window=vol_window, min_periods=max(5, vol_window // 2)).std() * np.sqrt(252)
+        vol = returns.rolling(
+            window=vol_window, min_periods=max(5, vol_window // 2)
+        ).std() * np.sqrt(252)
         vol_change = vol.pct_change().iloc[-1].replace([np.inf, -np.inf], np.nan)
 
         # Momentum as rolling sum of returns
-        momentum = returns.rolling(window=momentum_window, min_periods=max(5, momentum_window // 2)).sum()
-        momentum_change = momentum.pct_change().iloc[-1].replace([np.inf, -np.inf], np.nan)
+        momentum = returns.rolling(
+            window=momentum_window, min_periods=max(5, momentum_window // 2)
+        ).sum()
+        momentum_change = (
+            momentum.pct_change().iloc[-1].replace([np.inf, -np.inf], np.nan)
+        )
         return vol_change, momentum_change
 
-    def _calculate_attractiveness(self, vol_change: pd.Series, momentum_change: pd.Series) -> pd.Series:
+    def _calculate_attractiveness(
+        self, vol_change: pd.Series, momentum_change: pd.Series
+    ) -> pd.Series:
         # Avoid division by zero and negative blowups
         vol_score = 1.0 / (1.0 + vol_change.fillna(0.0))
         momentum_score = 1.0 + momentum_change.fillna(0.0)
@@ -183,7 +218,9 @@ class BollingerAttractivenessStrategy(BaseStrategy):
             return d
         return {k: 1.0 / n for k in d.keys()}
 
-    def _clip_weights(self, weights: pd.Series, min_weight: float, max_weight: float) -> pd.Series:
+    def _clip_weights(
+        self, weights: pd.Series, min_weight: float, max_weight: float
+    ) -> pd.Series:
         if min_weight is None and max_weight is None:
             return weights
         min_w = 0.0 if min_weight is None else float(min_weight)
@@ -201,12 +238,18 @@ class BollingerAttractivenessStrategy(BaseStrategy):
             return weights
         return pd.Series([1.0 / n] * n, index=weights.index)
 
-    def _build_trades_from_delta(self, current: pd.Series, target: pd.Series) -> List[Trade]:
+    def _build_trades_from_delta(
+        self, current: pd.Series, target: pd.Series
+    ) -> List[Trade]:
         trades: List[Trade] = []
         for tick in current.index:
             delta = float(target.get(tick, 0.0) - current.get(tick, 0.0))
             if delta > 0:
-                trades.append(Trade(symbol=tick, action=TradeAction.BUY, quantity=delta))
+                trades.append(
+                    Trade(symbol=tick, action=TradeAction.BUY, quantity=delta)
+                )
             elif delta < 0:
-                trades.append(Trade(symbol=tick, action=TradeAction.SELL, quantity=-delta))
+                trades.append(
+                    Trade(symbol=tick, action=TradeAction.SELL, quantity=-delta)
+                )
         return trades

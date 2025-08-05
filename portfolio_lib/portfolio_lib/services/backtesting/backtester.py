@@ -117,6 +117,8 @@ class BacktestingService:
         total_trades = 0
         winning_trades = 0
         losing_trades = 0
+        # Record of all executed trades with metadata for plotting/analysis
+        executed_trades: List[Dict] = []
 
         # Get aligned dates from price history
         all_dates = set()
@@ -223,6 +225,13 @@ class BacktestingService:
                     winning_trades += trade_stats["winning_trades"]
                     losing_trades += trade_stats["losing_trades"]
 
+                    # Accumulate executed trade metadata
+                    # Attach the current_date to any trades that were missing a timestamp
+                    for t in trade_stats.get("executed", []):
+                        if t.get("timestamp") is None:
+                            t["timestamp"] = current_date
+                        executed_trades.append(t)
+
                     last_rebalance_date = current_date
 
                 except Exception as e:
@@ -238,6 +247,8 @@ class BacktestingService:
             "total_trades": total_trades,
             "winning_trades": winning_trades,
             "losing_trades": losing_trades,
+            # Expose executed trades for downstream analytics/plotting
+            "executed_trades": executed_trades,
         }
 
     def _execute_trades(
@@ -254,6 +265,7 @@ class BacktestingService:
         num_trades = 0
         winning_trades = 0
         losing_trades = 0
+        executed: List[Dict] = []
 
         for trade in trades:
             if trade.symbol not in current_prices:
@@ -273,6 +285,21 @@ class BacktestingService:
                     )
                     new_cash -= total_needed
                     num_trades += 1
+                    executed.append(
+                        {
+                            "symbol": trade.symbol,
+                            "action": "buy",
+                            "quantity": float(trade.quantity),
+                            "price": float(price),
+                            "gross_value": float(trade_value),
+                            "commission": float(commission),
+                            "slippage": float(slippage),
+                            "total_cost": float(total_cost),
+                            "net_cash_delta": float(-total_needed),
+                            "timestamp": trade.timestamp,
+                            "reason": trade.reason,
+                        }
+                    )
 
             elif trade.action == TradeAction.SELL:
                 current_shares = new_holdings.get(trade.symbol, 0)
@@ -281,6 +308,21 @@ class BacktestingService:
                     proceeds = trade_value - total_cost
                     new_cash += proceeds
                     num_trades += 1
+                    executed.append(
+                        {
+                            "symbol": trade.symbol,
+                            "action": "sell",
+                            "quantity": float(trade.quantity),
+                            "price": float(price),
+                            "gross_value": float(trade_value),
+                            "commission": float(commission),
+                            "slippage": float(slippage),
+                            "total_cost": float(total_cost),
+                            "net_cash_delta": float(proceeds),
+                            "timestamp": trade.timestamp,
+                            "reason": trade.reason,
+                        }
+                    )
 
                     # Simple heuristic for winning/losing trades
                     if proceeds > trade_value * 0.95:  # Rough breakeven after costs
@@ -294,6 +336,7 @@ class BacktestingService:
             "num_trades": num_trades,
             "winning_trades": winning_trades,
             "losing_trades": losing_trades,
+            "executed": executed,
         }
 
     def _calculate_performance_metrics(
