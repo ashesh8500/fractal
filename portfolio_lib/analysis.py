@@ -130,6 +130,7 @@ momentum_result = backtester.run_backtest(
     initial_holdings=initial_holdings,
 )
 
+
 # 8) Metrics summary
 def print_metrics(title, res):
     print(f"=== {title} ===")
@@ -150,8 +151,10 @@ def print_metrics(title, res):
         )
     print()
 
+
 print_metrics("Bollinger", bollinger_result)
 print_metrics("Momentum", momentum_result)
+
 
 # 9) Build normalized equity series
 def norm_equity(values, timestamps):
@@ -159,6 +162,7 @@ def norm_equity(values, timestamps):
     if len(s) == 0 or not np.isfinite(s.iloc[0]) or s.iloc[0] == 0:
         raise RuntimeError("Invalid portfolio values for plotting.")
     return s / s.iloc[0], s
+
 
 bollinger_norm, bollinger_pv = norm_equity(
     bollinger_result.portfolio_values, bollinger_result.timestamps
@@ -270,4 +274,4 @@ print(
 )
 
 # %%
-bollinger_result.portfolio_values
+bollinger_result.strategy_name
