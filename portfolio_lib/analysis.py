@@ -23,7 +23,7 @@ import inspect
 import pkgutil
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterable, Union
 
 import numpy as np
 import pandas as pd
@@ -499,53 +499,184 @@ def plot_results(
 # -----------------------------
 
 
-def extract_allocations(res: Any) -> Optional[pd.DataFrame]:
-    """
-    Attempt to extract allocation weights over time from StrategyResult/BacktestResult.
-    Expected attributes:
-        - res.weights_timestamps: list[datetime]
-        - res.weights_series: list[dict[str, float]] or list[pd.Series]
-    Returns a DataFrame indexed by timestamps, columns = symbols, values = weights (0..1).
-    """
-    # Try common possibilities
-    timestamps = getattr(res, "weights_timestamps", None)
-    series_list = getattr(res, "weights_series", None)
+def _normalize_rows(df: pd.DataFrame) -> pd.DataFrame:
+    row_sums = df.sum(axis=1).replace(0, np.nan)
+    return df.div(row_sums, axis=0).fillna(0.0)
 
-    if timestamps is None or series_list is None:
-        # Fallback: if res has 'allocations' with list of dicts
-        allocations = getattr(res, "allocations", None)
-        if (
-            allocations
-            and isinstance(allocations, list)
-            and all(isinstance(a, dict) for a in allocations)
-        ):
-            timestamps = [pd.to_datetime(a.get("timestamp")) for a in allocations]
-            series_list = [a.get("weights") for a in allocations]
 
-    if timestamps is None or series_list is None:
-        return None
+def _to_ts_index(values: Iterable) -> pd.DatetimeIndex:
+    return pd.to_datetime(list(values))
 
-    ts = pd.to_datetime(timestamps)
+
+def _build_df_from_weight_time_pairs(
+    timestamps: Iterable, weights_list: Iterable[Union[Dict[str, float], pd.Series]]
+) -> Optional[pd.DataFrame]:
+    ts = pd.to_datetime(list(timestamps))
     frames = []
     cols = set()
-    for item in series_list:
+    for item in weights_list:
         if isinstance(item, dict):
-            s = pd.Series(item)
+            s = pd.Series(item, dtype=float)
         elif isinstance(item, pd.Series):
-            s = item
+            s = item.astype(float)
         else:
             continue
         cols.update(s.index)
         frames.append(s)
     if not frames:
         return None
-
     cols = sorted(list(cols))
     df = pd.DataFrame([s.reindex(cols).fillna(0.0) for s in frames], index=ts)
-    # Normalize each row to sum to 1.0 just in case
-    row_sums = df.sum(axis=1).replace(0, np.nan)
-    df = df.div(row_sums, axis=0).fillna(0.0)
-    return df
+    return _normalize_rows(df)
+
+
+def extract_allocations(res: Any) -> Optional[pd.DataFrame]:
+    """
+    Attempt to extract allocation weights over time from StrategyResult/BacktestResult.
+    Supports multiple shapes:
+      A) Attributes 'weights_timestamps' + 'weights_series'
+      B) Attribute 'allocations': list[{'timestamp': ..., 'weights': {...}}] or list[dict[str,float]]
+      C) Dict forms:
+         - 'allocation_series' or 'target_weights_series' as dict[timestamp -> weights]
+         - 'weights_over_time' as dict[symbol -> dict[timestamp -> weight]]
+      D) Fallback from holdings/positions history: compute weights from values vs portfolio total
+    Returns a DataFrame indexed by timestamps, columns = symbols, values = weights (0..1).
+    """
+    # A) weights_timestamps + weights_series
+    timestamps = getattr(res, "weights_timestamps", None)
+    series_list = getattr(res, "weights_series", None)
+    if timestamps is not None and series_list is not None:
+        df = _build_df_from_weight_time_pairs(timestamps, series_list)
+        if df is not None and not df.empty:
+            return df
+
+    # B) allocations list
+    allocations = getattr(res, "allocations", None)
+    if allocations and isinstance(allocations, list):
+        # two possible shapes: list of dicts with timestamp + weights; or list of weights only plus timestamps elsewhere
+        if all(isinstance(a, dict) and ("timestamp" in a and "weights" in a) for a in allocations):
+            timestamps = [pd.to_datetime(a.get("timestamp")) for a in allocations]
+            series_list = [a.get("weights") for a in allocations]
+            df = _build_df_from_weight_time_pairs(timestamps, series_list)
+            if df is not None and not df.empty:
+                return df
+        elif all(isinstance(a, dict) for a in allocations) and hasattr(res, "allocation_timestamps"):
+            timestamps = getattr(res, "allocation_timestamps")
+            series_list = allocations
+            df = _build_df_from_weight_time_pairs(timestamps, series_list)
+            if df is not None and not df.empty:
+                return df
+
+    # C) dict forms
+    for dict_attr in ("allocation_series", "target_weights_series"):
+        d = getattr(res, dict_attr, None)
+        if isinstance(d, dict) and d:
+            try:
+                timestamps = _to_ts_index(d.keys())
+                series_list = list(d.values())
+                df = _build_df_from_weight_time_pairs(timestamps, series_list)
+                if df is not None and not df.empty:
+                    return df
+            except Exception:
+                pass
+
+    # weights_over_time: symbol -> {ts -> weight}
+    wot = getattr(res, "weights_over_time", None)
+    if isinstance(wot, dict) and wot:
+        try:
+            # unify timestamp index
+            all_ts = sorted({pd.to_datetime(ts) for s in wot.values() for ts in list(s.keys())})
+            cols = sorted(list(wot.keys()))
+            mat = []
+            for ts in all_ts:
+                row = []
+                for col in cols:
+                    v = wot.get(col, {}).get(ts, np.nan)
+                    row.append(float(v) if v is not None else np.nan)
+                mat.append(row)
+            df = pd.DataFrame(mat, index=pd.to_datetime(all_ts), columns=cols).fillna(0.0)
+            df = _normalize_rows(df)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+
+    # D) Fallback: derive from holdings/positions/value history
+    # Try common names
+    holdings_hist = getattr(res, "holdings_history", None) or getattr(res, "positions_history", None)
+    portfolio_values = getattr(res, "portfolio_values", None)
+    timestamps = getattr(res, "timestamps", None)
+
+    # holdings_history can be:
+    #  - list[dict[symbol -> shares]] with matching timestamps
+    #  - list[dict] where each dict has {'timestamp': ..., 'holdings': {symbol: shares}}
+    #  - dict[timestamp -> {symbol: shares}]
+    # We convert to weights by combining with price history is not available here, so we approximate by
+    # using notional values if provided: look for 'values_history' or per-symbol values in each entry.
+    values_hist = getattr(res, "values_history", None)
+
+    def _build_df_from_history(
+        ts_list: Iterable,
+        list_dicts: Iterable[Dict[str, float]],
+        totals: Optional[Iterable[float]] = None,
+    ) -> Optional[pd.DataFrame]:
+        ts_idx = pd.to_datetime(list(ts_list))
+        frames = []
+        cols = set()
+        for d in list_dicts:
+            s = pd.Series({k: float(v) for k, v in d.items()})
+            cols.update(s.index)
+            frames.append(s)
+        if not frames:
+            return None
+        cols = sorted(list(cols))
+        df_vals = pd.DataFrame([s.reindex(cols).fillna(0.0) for s in frames], index=ts_idx)
+
+        if totals is not None:
+            totals_arr = pd.Series([float(x) for x in totals], index=ts_idx)
+            totals_arr = totals_arr.replace(0, np.nan)
+            df_w = df_vals.div(totals_arr, axis=0).fillna(0.0)
+            return _normalize_rows(df_w)
+        else:
+            # normalize row-wise if totals not available
+            return _normalize_rows(df_vals)
+
+    # Case: list of dicts aligned with timestamps
+    if isinstance(holdings_hist, list) and timestamps is not None and len(holdings_hist) == len(timestamps):
+        if values_hist is not None and isinstance(values_hist, list) and len(values_hist) == len(timestamps):
+            df = _build_df_from_history(timestamps, holdings_hist, portfolio_values)
+            if df is not None and not df.empty:
+                return df
+        else:
+            # Without explicit values, just normalize share proportions
+            df = _build_df_from_history(timestamps, holdings_hist, None)
+            if df is not None and not df.empty:
+                return df
+
+    # Case: list of entries with timestamp/holdings keys
+    if isinstance(holdings_hist, list) and holdings_hist and isinstance(holdings_hist[0], dict) and "holdings" in holdings_hist[0]:
+        ts_list = []
+        list_dicts = []
+        for entry in holdings_hist:
+            ts_list.append(pd.to_datetime(entry.get("timestamp")))
+            list_dicts.append(entry.get("holdings", {}))
+        df = _build_df_from_history(ts_list, list_dicts, portfolio_values)
+        if df is not None and not df.empty:
+            return df
+
+    # Case: dict[timestamp -> {symbol: shares}]
+    if isinstance(holdings_hist, dict) and holdings_hist:
+        ts_list = []
+        list_dicts = []
+        for k, v in holdings_hist.items():
+            ts_list.append(pd.to_datetime(k))
+            list_dicts.append(v)
+        df = _build_df_from_history(ts_list, list_dicts, portfolio_values)
+        if df is not None and not df.empty:
+            return df
+
+    # Nothing found
+    return None
 
 
 def plot_allocation_stack(
