@@ -41,7 +41,7 @@ end = pd.Timestamp.today().normalize()
 start = end - pd.Timedelta(days=365 * 3)  # 3 years
 
 bt_cfg = BacktestConfig(
-    start_date=start.to_pydatetime(),
+    start_date=pd.Timestamp(start).to_pydatetime(),
     end_date=end.to_pydatetime(),
     initial_capital=100000.0,
     commission=0.0005,  # 5 bps
@@ -60,7 +60,12 @@ if not price_history:
 
 # Align first common date to price
 first_dates = [
-    df.index.min() for s, df in price_history.items() if not df.empty and s in symbols
+    df.index.min()
+    for s, df in price_history.items()
+    if hasattr(df, "empty")
+    and not df.empty
+    and s in symbols
+    and isinstance(df.index.min(), pd.Timestamp)
 ]
 if not first_dates:
     raise RuntimeError("Could not find any first dates for given symbols.")
@@ -69,7 +74,11 @@ first_common = max(first_dates)
 start_prices = {}
 for s in symbols:
     df = price_history.get(s)
-    if df is not None and first_common in df.index:
+    if (
+        df is not None
+        and isinstance(first_common, pd.Timestamp)
+        and first_common in df.index
+    ):
         start_prices[s] = float(df.loc[first_common, "close"])
 
 symbols_valid = [
@@ -131,28 +140,26 @@ fig, ax = plt.subplots(figsize=(12, 6))
 pv.plot(ax=ax, label=f"{result.strategy_name} Portfolio", linewidth=2)
 
 # Plot benchmark if available
-if hasattr(result, "benchmark_values") and result.benchmark_values:
-    bench_series = pd.Series(
-        result.benchmark_values, index=pd.to_datetime(result.benchmark_timestamps)
-    ).sort_index()
-    bench_series.plot(ax=ax, label="Benchmark (QQQ)", linewidth=2)
-else:
-    # Fallback: calculate benchmark from price history if not in result
-    if bt_cfg.benchmark in price_history:
-        bench_df = price_history[bt_cfg.benchmark]
-        bench_prices = bench_df["close"]
-        # Filter to backtest period
-        start_bound = bt_cfg.start_date
-        end_bound = bt_cfg.end_date
-        mask = (bench_prices.index >= start_bound) & (bench_prices.index <= end_bound)
-        bench_prices_filtered = bench_prices[mask]
-        
-        if len(bench_prices_filtered) > 1:
-            # Normalize to start at 1 for comparison
-            bench_normalized = bench_prices_filtered / bench_prices_filtered.iloc[0]
+# Remove reliance on unknown BacktestResult attributes; use fallback from price history
+if bt_cfg.benchmark in price_history:
+    bench_df = price_history[bt_cfg.benchmark]
+    bench_prices = bench_df["close"]
+    # Filter to backtest period
+    start_bound = pd.Timestamp(bt_cfg.start_date)
+    end_bound = pd.Timestamp(bt_cfg.end_date)
+    mask = (bench_prices.index >= start_bound) & (bench_prices.index <= end_bound)
+    bench_prices_filtered = bench_prices[mask]
+
+    if (
+        isinstance(bench_prices_filtered, pd.Series)
+        and bench_prices_filtered.shape[0] > 1
+    ):
+        # Normalize to start at 1 for comparison
+        first_val = float(bench_prices_filtered.iloc[0])
+        if np.isfinite(first_val) and first_val != 0:
+            bench_normalized = bench_prices_filtered / first_val
             bench_series = pd.Series(
-                bench_normalized.values, 
-                index=bench_prices_filtered.index
+                bench_normalized.values, index=bench_prices_filtered.index
             )
             bench_series.plot(ax=ax, label="Benchmark (QQQ)", linewidth=2)
 
