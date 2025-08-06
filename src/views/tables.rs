@@ -26,6 +26,7 @@ impl TablesComponent {
 
 impl PortfolioComponent for TablesComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, config: &Config) {
+        let base_id = ui.id().with("component::tables::content");
         ui.heading("Data Tables");
 
         // Provider status header
@@ -82,6 +83,7 @@ impl PortfolioComponent for TablesComponent {
             };
 
             TableBuilder::new(ui)
+                .id(base_id.with(("tables", "holdings_table")))
                 .striped(true)
                 .resizable(true)
                 .column(Column::auto()) // Symbol
@@ -157,6 +159,7 @@ impl PortfolioComponent for TablesComponent {
             ui.heading("All Metrics");
 
             TableBuilder::new(ui)
+                .id(base_id.with(("tables", "metrics_table")))
                 .striped(true)
                 .resizable(true)
                 .column(Column::auto())
@@ -264,6 +267,10 @@ impl PortfolioComponent for TablesComponent {
 
     fn set_open(&mut self, open: bool) {
         self.is_open = open;
+    }
+
+    fn category(&self) -> ComponentCategory {
+        self.category()
     }
 
     fn category(&self) -> ComponentCategory {

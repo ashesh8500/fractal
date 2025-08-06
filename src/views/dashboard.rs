@@ -1,3 +1,4 @@
+#![allow(elided_lifetimes_in_paths)]
 //! Portfolio overview dashboard component
 
 use crate::components::{PortfolioComponent, ComponentCategory};
@@ -16,12 +17,13 @@ impl DashboardComponent {
 
 impl PortfolioComponent for DashboardComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, _config: &Config) {
+        let base_id = ui.id().with("component::dashboard::content");
         ui.heading(&format!("Portfolio: {}", portfolio.name));
         
         ui.add_space(4.0);
         ui.separator();
         
-        egui::Grid::new("portfolio_overview")
+        egui::Grid::new(base_id.with(("dashboard", "portfolio_overview")))
             .num_columns(2)
             .spacing([40.0, 6.0])
             .striped(true)
@@ -46,7 +48,7 @@ impl PortfolioComponent for DashboardComponent {
         
         ui.separator();
         ui.heading("Risk Metrics");
-        egui::Grid::new("risk_metrics")
+        egui::Grid::new(base_id.with(("dashboard", "risk_metrics")))
             .num_columns(2)
             .spacing([40.0, 6.0])
             .striped(true)
@@ -72,7 +74,7 @@ impl PortfolioComponent for DashboardComponent {
         
         ui.separator();
         ui.heading("Performance Metrics");
-        egui::Grid::new("performance_metrics")
+        egui::Grid::new(base_id.with(("dashboard", "performance_metrics")))
             .num_columns(2)
             .spacing([40.0, 6.0])
             .striped(true)

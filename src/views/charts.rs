@@ -43,7 +43,7 @@ impl PortfolioComponent for ChartsComponent {
         ui.horizontal(|ui| {
             ui.label("Symbol:");
             // Use unique salt for ComboBox derived from the local Ui path
-            let combo_id = base_id.with("charts_symbol_combo");
+            let combo_id = base_id.with(("charts", "symbol_combo"));
             egui::ComboBox::from_id_salt(combo_id)
                 .selected_text(
                     self.selected_symbol
@@ -124,14 +124,14 @@ fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint]) {
     }
 
     // Plot id derived from the local Ui id to avoid collisions with other components/windows
-    let plot_id = ui.id().with(("charts_plot", symbol));
+    let plot_id = base_id.with(("charts", "plot", symbol));
     Plot::new(plot_id)
         .legend(Legend::default())
         .view_aspect(2.2)
         .allow_scroll(false)
-        .allow_boxed_zoom(true)
+        .allow_boxed_zoom)
         .show(ui, |plot_ui| {
-            let color = Color32::from_rgb(80, 160, 255);
+            let color = Color::from_rgb(80, 160, 255);
             plot_ui.line(
                 Line::new(points)
                     .name(format!("{symbol} Close"))

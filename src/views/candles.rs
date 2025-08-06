@@ -43,7 +43,7 @@ impl PortfolioComponent for CandlesComponent {
 
         ui.horizontal(|ui| {
             ui.label("Symbol:");
-            let combo_id = base_id.with("candles_symbol_combo");
+            let combo_id = base_id.with(("candles", "symbol_combo"));
             egui::ComboBox::from_id_salt(combo_id)
                 .selected_text(
                     self.selected_symbol
@@ -145,7 +145,7 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
     }
 
     // Plot id scoped under the content base_id to avoid collisions
-    let plot_id = base_id.with(("candles_boxplot_plot", symbol));
+    let plot_id = base_id.with(("candles", "boxplot_plot", symbol));
     Plot::new(plot_id)
         .legend(Legend::default())
         .allow_scroll(false)
