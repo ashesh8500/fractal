@@ -1,4 +1,4 @@
-use egui::{Color, Color32, Id, Stroke, Ui};
+use egui::{Color32, Id, Stroke, Ui};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use crate::components::{ComponentCategory, PortfolioComponent};
 use crate::portfolio::{Portfolio, PricePoint};
@@ -129,9 +129,9 @@ fn render_line_plot(ui: &mut Ui, base_id: Id, symbol: &str, data: &[PricePoint])
         .legend(Legend::default())
         .view_aspect(2.2)
         .allow_scroll(false)
-        .allow_boxed_zoom()
+        .allow_boxed_zoom(true)
         .show(ui, |plot_ui| {
-            let color = Color::from_rgb(80, 160, 255);
+            let color = Color32::from_rgb(80, 160, 255);
             plot_ui.line(
                 Line::new(points)
                     .name(format!("{symbol} Close"))

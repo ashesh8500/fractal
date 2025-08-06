@@ -83,7 +83,7 @@ impl PortfolioComponent for TablesComponent {
             };
 
             TableBuilder::new(ui)
-                .id(base_id.with(("tables", "holdings_table")))
+                // .id(...) is not available in egui_extras::TableBuilder for this version
                 .striped(true)
                 .resizable(true)
                 .column(Column::auto()) // Symbol
@@ -159,7 +159,7 @@ impl PortfolioComponent for TablesComponent {
             ui.heading("All Metrics");
 
             TableBuilder::new(ui)
-                .id(base_id.with(("tables", "metrics_table")))
+                // .id(...) is not available in egui_extras::TableBuilder for this version
                 .striped(true)
                 .resizable(true)
                 .column(Column::auto())
@@ -267,10 +267,6 @@ impl PortfolioComponent for TablesComponent {
 
     fn set_open(&mut self, open: bool) {
         self.is_open = open;
-    }
-
-    fn category(&self) -> ComponentCategory {
-        self.category()
     }
 
     fn category(&self) -> ComponentCategory {
