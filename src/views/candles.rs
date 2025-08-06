@@ -1,9 +1,8 @@
 use egui::{self, Color32, Ui};
-use egui::plot::{Line, Plot, PlotPoints, PlotUi, Stroke};
+use egui_plot::{Line, Plot, PlotPoints, PlotUi};
 use crate::components::PortfolioComponent;
-use crate::portfolio::{Portfolio, PricePoint};
+use crate::portfolio::Portfolio;
 use crate::state::Config;
-use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +18,7 @@ fn to_unix_secs(timestamp: DateTime<Utc>) -> f64 {
 }
 
 /// Helper function that draws candlesticks onto an egui plot.
-fn draw_candles(plot_ui: &mut PlotUi, candles: &[(f64, f64, f64, f64, f64)]) {
+fn draw_candles(plot_ui: &mut PlotUi<'_>, candles: &[(f64, f64, f64, f64, f64)]) {
     for &(timestamp, open, high, low, close) in candles {
         // Choose colour based on price movement
         let color = if close >= open { Color32::GREEN } else { Color32::RED };
@@ -48,7 +47,6 @@ pub struct CandlesComponent {
     is_open: bool,
     selected_symbol: Option<String>,
     timeframe: Timeframe,
-    price_history: Option<HashMap<String, Vec<PricePoint>>>,
 }
 
 impl CandlesComponent {
@@ -57,9 +55,9 @@ impl CandlesComponent {
             is_open: true,
             selected_symbol: None,
             timeframe: Timeframe::Daily,
-            price_history: None,
         }
     }
+    
 }
 
 impl PortfolioComponent for CandlesComponent {
@@ -69,7 +67,14 @@ impl PortfolioComponent for CandlesComponent {
             return;
         }
 
+        // Pre-compute IDs outside of closures to avoid borrow conflicts
+        let window_id = egui::Id::new(("candles_window", self as *const _ as usize));
+        let symbol_combo_id = egui::Id::new(("candles_symbol_combo", self as *const _ as usize));
+        let timeframe_combo_id = egui::Id::new(("candles_timeframe_combo", self as *const _ as usize));
+        let plot_id = egui::Id::new(("candles_plot", self as *const _ as usize));
+
         egui::Window::new("Candles")
+            .id(window_id)
             .open(&mut self.is_open)
             .default_width(800.0)
             .show(ui.ctx(), |ui| {
@@ -86,7 +91,7 @@ impl PortfolioComponent for CandlesComponent {
                 // Symbol selector
                 ui.horizontal(|ui| {
                     ui.label("Select Symbol:");
-                    egui::ComboBox::from_id_source("symbol_selector")
+                    egui::ComboBox::from_id_salt(symbol_combo_id)
                         .selected_text(
                             self.selected_symbol
                                 .as_ref()
@@ -104,7 +109,7 @@ impl PortfolioComponent for CandlesComponent {
                 // Timeframe selector (currently unused but kept for future extension)
                 ui.horizontal(|ui| {
                     ui.label("Timeframe:");
-                    egui::ComboBox::from_id_source("timeframe_selector")
+                    egui::ComboBox::from_id_salt(timeframe_combo_id)
                         .selected_text(format!("{:?}", self.timeframe))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.timeframe, Timeframe::Daily, "Daily");
@@ -141,7 +146,7 @@ impl PortfolioComponent for CandlesComponent {
                         }
 
                         // Draw the candlestick plot
-                        Plot::new("candle_chart")
+                        Plot::new(plot_id)
                             .view_aspect(2.0)
                             .show(ui, |plot_ui| {
                                 draw_candles(plot_ui, &candles);
