@@ -25,8 +25,7 @@ pub struct Portfolio {
     
     #[serde(default)]
     pub risk_metrics: RiskMetrics,
-    
-    #[serde(default)]
+(default)]
     pub performance_metrics: PerformanceMetrics,
     
     #[serde(default = "default_data_provider")]

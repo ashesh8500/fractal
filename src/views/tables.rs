@@ -30,7 +30,7 @@ impl PortfolioComponent for TablesComponent {
 
         // Provider status header
         ui.group(|ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal(|ui) {
                 let mode = if config.use_native_provider {
                     "Native (Alpha Vantage)"
                 } else {
@@ -162,7 +162,7 @@ impl PortfolioComponent for TablesComponent {
                     });
 
                     body.row(row_height, |mut row| {
-                        row.col(|ui| { ui.strong("Total Return"); });
+                        row.col| { ui.strong("Total Return"); });
                         row.col(|ui| { ui.label(format!("{:.2}%", portfolio.performance_metrics.total_return * 100.0)); });
                     });
                     body.row(row_height, |mut row| {
