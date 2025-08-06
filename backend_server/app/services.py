@@ -41,6 +41,8 @@ class PortfolioService:
         return (
             self._validate_portfolio_name(data.name)
             .and_then(lambda _: self._create_portfolio_instance(data, provider))
+            # Refresh market data post-create to initialize total_value/weights
+            .and_then(lambda p: safe_call(lambda: (p.refresh_data(), p)[1]))
             .map(self._store_portfolio)
             .map(self._portfolio_to_response)
         )
@@ -153,26 +155,22 @@ class PortfolioService:
         )
     
     def _run_strategy(self, portfolio: Portfolio, request: StrategyExecuteRequest) -> AppResult[Any]:
-        """Execute strategy on portfolio."""
-        # For now, return a mock response since strategy execution is not fully implemented
-        return Result.ok({
-            "strategy_name": request.strategy_name,
-            "execution_date": datetime.now(),
-            "trades": [],
-            "performance_metrics": {"expected_return": 0.08, "risk_score": 0.15},
-            "dry_run": request.dry_run
-        })
+        """Execute strategy on portfolio using portfolio_lib implementation when available."""
+        def _exec() -> Any:
+            # Convert request to StrategyConfig if needed
+            cfg = StrategyConfig(**request.model_dump()) if hasattr(request, "model_dump") else StrategyConfig(**request.__dict__)
+            result = portfolio.run_strategy(request.strategy_name, cfg)
+            # Normalize to dict if the model provides to_dict
+            return result.to_dict() if hasattr(result, "to_dict") else result
+        return safe_call(_exec)
     
     def _run_backtest(self, portfolio: Portfolio, request: BacktestRequest) -> AppResult[Any]:
-        """Run backtest on portfolio."""
-        # For now, return a mock response since backtesting is not fully implemented
-        return Result.ok({
-            "strategy_name": request.strategy_name,
-            "period": {"start_date": request.start_date, "end_date": request.end_date},
-            "performance": {"total_return": 0.15, "sharpe_ratio": 1.2},
-            "trades_executed": 10,
-            "final_portfolio_value": request.initial_capital * 1.15
-        })
+        """Run backtest on portfolio using portfolio_lib implementation when available."""
+        def _exec() -> Any:
+            cfg = BacktestConfig(**request.model_dump()) if hasattr(request, "model_dump") else BacktestConfig(**request.__dict__)
+            result = portfolio.run_backtest(request.strategy_name, cfg)
+            return result.to_dict() if hasattr(result, "to_dict") else result
+        return safe_call(_exec)
     
     def _fetch_current_prices(self, service, symbols: list[str]) -> AppResult[Dict[str, float]]:
         """Fetch current prices from data service."""

@@ -3,8 +3,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from portfolio_lib.models.strategy import StrategyConfig, StrategyResult
-from portfolio_lib.services.backtesting.backtester import Trade, TradeAction
+from portfolio_lib.models.strategy import StrategyConfig, StrategyResult, Trade, TradeAction
 from portfolio_lib.services.strategy import BaseStrategy
 
 
