@@ -5,7 +5,7 @@ use crate::portfolio::{Portfolio, PricePoint};
 use crate::state::Config;
 
 /// ChartsComponent renders simple demo-style line charts based on price history.
-/// IDs are derived from the UI path and namespaced to avoid collisions, following egui demo patterns.
+/// IDs are derived from the current Ui id and namespaced to avoid collisions.
 pub struct ChartsComponent {
     is_open: bool,
     selected_symbol: Option<String>,
@@ -26,8 +26,8 @@ impl PortfolioComponent for ChartsComponent {
             return;
         }
 
-        // Derive a unique, stable base Id from the UI path and a fixed salt.
-        let base_id: Id = ui.id().with("charts_component");
+        // Derive a unique, stable base Id from the current Ui path for this component.
+        let base_id: Id = ui.id().with("component::charts");
         let window_id = base_id.with("window");
 
         egui::Window::new("Charts")
@@ -36,6 +36,9 @@ impl PortfolioComponent for ChartsComponent {
             .default_width(900.0)
             .default_height(560.0)
             .show(ui.ctx(), |ui| {
+                // Within the window, derive a new base from the inner Ui to avoid clashes
+                let base_id = ui.id().with("component::charts::window");
+
                 ui.heading("Portfolio Charts (Demo Line Plot)");
                 ui.separator();
 
@@ -49,7 +52,8 @@ impl PortfolioComponent for ChartsComponent {
 
                 ui.horizontal(|ui| {
                     ui.label("Symbol:");
-                    let combo_id = base_id.with("symbol_combo");
+                    // Use unique salt for ComboBox derived from the local Ui path
+                    let combo_id = ui.id().with("charts_symbol_combo");
                     egui::ComboBox::from_id_salt(combo_id)
                         .selected_text(
                             self.selected_symbol
@@ -77,7 +81,7 @@ impl PortfolioComponent for ChartsComponent {
 
                 if let Some(sym) = self.selected_symbol.clone() {
                     if let Some(series) = portfolio.get_price_history(&sym) {
-                        render_line_plot(ui, &sym, series, base_id);
+                        render_line_plot(ui, &sym, series);
                     } else {
                         ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
                     }
@@ -104,7 +108,7 @@ impl PortfolioComponent for ChartsComponent {
     }
 }
 
-fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_id: Id) {
+fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint]) {
     if data.is_empty() {
         ui.label("No data points available.");
         return;
@@ -130,7 +134,8 @@ fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_id: Id)
         });
     }
 
-    let plot_id = base_id.with(format!("plot_line::{symbol}"));
+    // Plot id derived from the local Ui id to avoid collisions with other components/windows
+    let plot_id = ui.id().with(("charts_plot", symbol));
     Plot::new(plot_id)
         .legend(Legend::default())
         .view_aspect(2.2)

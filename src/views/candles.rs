@@ -1,4 +1,4 @@
-use egui::{self, Color32, Id, Ui};
+use egui::{self, Color32, Ui};
 use egui_plot::{BoxElem, BoxPlot, BoxPlotPolicy, Legend, Plot};
 use crate::components::{ComponentCategory, PortfolioComponent};
 use crate::portfolio::{Portfolio, PricePoint};
@@ -26,9 +26,8 @@ impl PortfolioComponent for CandlesComponent {
             return;
         }
 
-        // Use a UI-derived base id to avoid collisions
-        let base_id = ui.id().with("candles_component");
-        let window_id = base_id.with("window");
+        // Base id scoped to the current Ui path for this component
+        let window_id = ui.id().with("component::candles::window");
 
         egui::Window::new("Candles")
             .id(window_id)
@@ -36,6 +35,9 @@ impl PortfolioComponent for CandlesComponent {
             .default_width(900.0)
             .default_height(560.0)
             .show(ui.ctx(), |ui| {
+                // Derive a window-local base id
+                let base_id = ui.id().with("component::candles::content");
+
                 ui.heading("Candlestick (BoxPlot Demo)");
                 ui.separator();
 
@@ -50,7 +52,7 @@ impl PortfolioComponent for CandlesComponent {
 
                 ui.horizontal(|ui| {
                     ui.label("Symbol:");
-                    let combo_id = base_id.with("symbol_combo");
+                    let combo_id = ui.id().with("candles_symbol_combo");
                     egui::ComboBox::from_id_salt(combo_id)
                         .selected_text(
                             self.selected_symbol
@@ -105,7 +107,7 @@ impl PortfolioComponent for CandlesComponent {
     }
 }
 
-fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_id: Id) {
+fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_id: egui::Id) {
     if data.is_empty() {
         ui.label("No data points available.");
         return;
@@ -150,7 +152,8 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         boxes.push(be);
     }
 
-    let plot_id = base_id.with(format!("candles_boxplot::{symbol}"));
+    // Plot id scoped to this window content to avoid collisions
+    let plot_id = base_id.with(("candles_boxplot_plot", symbol));
     Plot::new(plot_id)
         .legend(Legend::default())
         .allow_scroll(false)
