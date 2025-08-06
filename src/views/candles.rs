@@ -1,52 +1,14 @@
 use egui::{self, Color32, Id, Ui};
-use egui_plot::{Line, Plot, PlotPoints, PlotUi};
-use crate::components::PortfolioComponent;
-use crate::portfolio::Portfolio;
+use egui_plot::{BoxElem, BoxPlot, BoxPlotPolicy, Legend, Plot};
+use crate::components::{ComponentCategory, PortfolioComponent};
+use crate::portfolio::{Portfolio, PricePoint};
 use crate::state::Config;
-use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Timeframe {
-    Daily,
-    Weekly,
-    Monthly,
-}
-
-/// Helper function to convert a `DateTime<Utc>` into Unix seconds (as f64)
-fn to_unix_secs(timestamp: DateTime<Utc>) -> f64 {
-    timestamp.timestamp() as f64
-}
-
-/// Helper function that draws candlesticks onto an egui plot.
-fn draw_candles(plot_ui: &mut PlotUi<'_>, candles: &[(f64, f64, f64, f64, f64)]) {
-    for &(timestamp, open, high, low, close) in candles {
-        // Choose colour based on price movement
-        let color = if close >= open { Color32::GREEN } else { Color32::RED };
-
-        // Draw the wick (high to low)
-        plot_ui.line(
-            Line::new(PlotPoints::from(vec![[timestamp, high], [timestamp, low]]))
-                .color(Color32::WHITE),
-        );
-
-        // Draw the body as a rectangle using line thickness to emulate body
-        let body_height = (close - open).abs();
-        let body_y_top = open.max(close);
-        let body_y_bottom = open.min(close);
-
-        plot_ui.line(
-            Line::new(PlotPoints::from(vec![[timestamp, body_y_top], [timestamp, body_y_bottom]]))
-                .color(color)
-                .width((body_height.max(0.5)) as f32),
-        );
-    }
-}
-
-/// UI component that displays a candlestick chart for a selected symbol.
+/// CandlesComponent implemented using BoxPlot, following egui demo patterns.
+/// Each candle is represented as a BoxElem (min/low, quartiles via open/close, max/high).
 pub struct CandlesComponent {
     is_open: bool,
     selected_symbol: Option<String>,
-    timeframe: Timeframe,
 }
 
 impl CandlesComponent {
@@ -54,123 +16,74 @@ impl CandlesComponent {
         Self {
             is_open: true,
             selected_symbol: None,
-            timeframe: Timeframe::Daily,
         }
     }
 }
 
 impl PortfolioComponent for CandlesComponent {
-    /// Render the component. Matches the `PortfolioComponent` trait signature.
     fn render(&mut self, ui: &mut Ui, portfolio: &Portfolio, _config: &Config) {
         if !self.is_open {
             return;
         }
 
-        // Base unique id namespace for this instance derived from ui
+        // Use a UI-derived base id to avoid collisions
         let base_id = ui.id().with("candles_component");
         let window_id = base_id.with("window");
-        let symbol_combo_id = base_id.with("symbol_combo");
-        let timeframe_combo_id = base_id.with("timeframe_combo");
 
         egui::Window::new("Candles")
             .id(window_id)
             .open(&mut self.is_open)
-            .default_width(800.0)
+            .default_width(900.0)
+            .default_height(560.0)
             .show(ui.ctx(), |ui| {
-                ui.heading("Candlestick Charts");
+                ui.heading("Candlestick (BoxPlot Demo)");
+                ui.separator();
 
-                // Gather symbols from the portfolio holdings
-                let symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
+                // Symbols list from holdings, sorted for stable ordering
+                let mut symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
+                symbols.sort();
 
                 if symbols.is_empty() {
-                    ui.label("No holdings available to display candle charts");
+                    ui.label("No holdings available. Add holdings to view candles.");
                     return;
                 }
 
-                // Symbol selector
                 ui.horizontal(|ui| {
-                    ui.label("Select Symbol:");
-                    egui::ComboBox::from_id_salt(symbol_combo_id)
+                    ui.label("Symbol:");
+                    let combo_id = base_id.with("symbol_combo");
+                    egui::ComboBox::from_id_salt(combo_id)
                         .selected_text(
                             self.selected_symbol
                                 .as_ref()
-                                .cloned()
-                                .unwrap_or_else(|| "Select".to_string()),
+                                .map(|s| s.as_str())
+                                .unwrap_or("Select symbol"),
                         )
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.selected_symbol, None, "Select");
-                            for symbol in &symbols {
-                                ui.selectable_value(&mut self.selected_symbol, Some(symbol.clone()), symbol);
+                            if ui
+                                .selectable_label(self.selected_symbol.is_none(), "Select symbol")
+                                .clicked()
+                            {
+                                self.selected_symbol = None;
+                            }
+                            for sym in &symbols {
+                                let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
+                                if ui.selectable_label(selected, sym).clicked() {
+                                    self.selected_symbol = Some(sym.clone());
+                                }
                             }
                         });
                 });
 
-                // Timeframe selector (currently unused but kept for future extension)
-                ui.horizontal(|ui| {
-                    ui.label("Timeframe:");
-                    egui::ComboBox::from_id_salt(timeframe_combo_id)
-                        .selected_text(format!("{:?}", self.timeframe))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.timeframe, Timeframe::Daily, "Daily");
-                            ui.selectable_value(&mut self.timeframe, Timeframe::Weekly, "Weekly");
-                            ui.selectable_value(&mut self.timeframe, Timeframe::Monthly, "Monthly");
-                        });
-                });
+                ui.add_space(8.0);
 
-                // Render chart if a symbol is selected
-                if let Some(ref symbol) = self.selected_symbol {
-                    if let Some(price_data) = portfolio.get_price_history(symbol) {
-                        if price_data.is_empty() {
-                            ui.label("No price history available for this symbol");
-                            return;
-                        }
-
-                        // Convert price data into candle tuples
-                        let mut candles: Vec<(f64, f64, f64, f64, f64)> = price_data
-                            .iter()
-                            .map(|pt| {
-                                (
-                                    pt.timestamp.timestamp() as f64,
-                                    pt.open,
-                                    pt.high,
-                                    pt.low,
-                                    pt.close,
-                                )
-                            })
-                            .collect();
-
-                        // Limit to the most recent 100 points for performance
-                        if candles.len() > 100 {
-                            candles = candles[candles.len() - 100..].to_vec();
-                        }
-
-                        // Draw the candlestick plot with a unique id per instance and symbol
-                        let plot_id = base_id.with(format!("candles_plot::{}", symbol));
-                        Plot::new(plot_id)
-                            .view_aspect(2.0)
-                            .show(ui, |plot_ui| {
-                                draw_candles(plot_ui, &candles);
-                            });
-
-                        // Summary of price change over the displayed period
-                        ui.add_space(10.0);
-                        if let (Some(first), Some(last)) = (candles.first(), candles.last()) {
-                            let change = ((last.4 - first.1) / first.1) * 100.0;
-                            let change_color = if change >= 0.0 {
-                                Color32::GREEN
-                            } else {
-                                Color32::RED
-                            };
-                            ui.horizontal(|ui| {
-                                ui.label("Period change:");
-                                ui.colored_label(change_color, format!("{:.2}%", change));
-                            });
-                        }
+                if let Some(sym) = self.selected_symbol.clone() {
+                    if let Some(series) = portfolio.get_price_history(&sym) {
+                        render_boxplot_candles(ui, &sym, series, base_id);
                     } else {
-                        ui.label("No price history available for this symbol");
+                        ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
                     }
                 } else {
-                    ui.label("Select a symbol to view its candlestick chart");
+                    ui.label("Choose a symbol to display candlesticks.");
                 }
             });
     }
@@ -187,7 +100,65 @@ impl PortfolioComponent for CandlesComponent {
         self.is_open = open;
     }
 
-    fn category(&self) -> crate::components::ComponentCategory {
-        crate::components::ComponentCategory::Charts
+    fn category(&self) -> ComponentCategory {
+        ComponentCategory::Charts
     }
+}
+
+fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_id: Id) {
+    if data.is_empty() {
+        ui.label("No data points available.");
+        return;
+    }
+
+    // Limit bars for performance (demo pattern)
+    let max_points = 300;
+    let slice = if data.len() > max_points {
+        &data[data.len() - max_points..]
+    } else {
+        data
+    };
+
+    // Build box elements from OHLC. We'll use:
+    // - whisker_min: low
+    // - quartile1: min(open, close)
+    // - median: (open + close)/2
+    // - quartile3: max(open, close)
+    // - whisker_max: high
+    let mut boxes = Vec::with_capacity(slice.len());
+    for (i, p) in slice.iter().enumerate() {
+        let low = p.low;
+        let high = p.high;
+        let (q1, q3) = if p.open <= p.close {
+            (p.open, p.close)
+        } else {
+            (p.close, p.open)
+        };
+        let median = 0.5 * (p.open + p.close);
+
+        // Place each box at its index; x is f64
+        let mut be = BoxElem::new(i as f64, q1, q3)
+            .whisker_low(low)
+            .whisker_high(high)
+            .median(median);
+
+        // Color depending on up/down day
+        let up = p.close >= p.open;
+        let fill = if up { Color32::from_rgb(0, 180, 0) } else { Color32::from_rgb(200, 40, 40) };
+        be = be.fill(fill).stroke(egui::Stroke::new(1.0, Color32::WHITE));
+
+        boxes.push(be);
+    }
+
+    let plot_id = base_id.with(format!("candles_boxplot::{symbol}"));
+    Plot::new(plot_id)
+        .legend(Legend::default())
+        .allow_scroll(false)
+        .allow_boxed_zoom(true)
+        .show(ui, |plot_ui| {
+            let mut bp = BoxPlot::new(boxes).name(format!("{symbol} OHLC"));
+            // For candlesticks we want to show all data, no outlier filtering:
+            bp = bp.box_plot_policy(BoxPlotPolicy::Constant(0.0));
+            plot_ui.box_plot(bp);
+        });
 }

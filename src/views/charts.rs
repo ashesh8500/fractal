@@ -1,19 +1,14 @@
-use egui::{Color32, Id, Stroke};
-use egui_plot::{Line, Plot, PlotPoints};
-use crate::components::PortfolioComponent;
-use crate::portfolio::Portfolio;
+use egui::{Color32, Id, Stroke, Ui};
+use egui_plot::{Legend, Line, Plot, PlotPoints};
+use crate::components::{ComponentCategory, PortfolioComponent};
+use crate::portfolio::{Portfolio, PricePoint};
 use crate::state::Config;
 
+/// ChartsComponent renders simple demo-style line charts based on price history.
+/// IDs are derived from the UI path and namespaced to avoid collisions, following egui demo patterns.
 pub struct ChartsComponent {
     is_open: bool,
     selected_symbol: Option<String>,
-    chart_type: ChartType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ChartType {
-    LineChart,
-    CandlestickChart,
 }
 
 impl ChartsComponent {
@@ -21,7 +16,6 @@ impl ChartsComponent {
         Self {
             is_open: true,
             selected_symbol: None,
-            chart_type: ChartType::LineChart,
         }
     }
 }
@@ -32,82 +26,63 @@ impl PortfolioComponent for ChartsComponent {
             return;
         }
 
-        // Use UI-derived id namespace to avoid requiring Hash on self
+        // Derive a unique, stable base Id from the UI path and a fixed salt.
         let base_id: Id = ui.id().with("charts_component");
         let window_id = base_id.with("window");
-        let symbol_combo_id = base_id.with("symbol_combo");
-        let chart_type_combo_id = base_id.with("chart_type_combo");
 
         egui::Window::new("Charts")
             .id(window_id)
             .open(&mut self.is_open)
-            .default_width(800.0)
-            .default_height(500.0)
+            .default_width(900.0)
+            .default_height(560.0)
             .show(ui.ctx(), |ui| {
-                ui.heading("Portfolio Charts");
+                ui.heading("Portfolio Charts (Demo Line Plot)");
+                ui.separator();
 
-                // Get symbols from portfolio holdings
-                let symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
+                let mut symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
+                symbols.sort();
 
                 if symbols.is_empty() {
-                    ui.label("No holdings available to display charts");
+                    ui.label("No holdings found. Add holdings to view charts.");
                     return;
                 }
 
-                // Symbol selector with unique ID
                 ui.horizontal(|ui| {
-                    ui.label("Select Symbol:");
-                    egui::ComboBox::from_id_salt(symbol_combo_id)
+                    ui.label("Symbol:");
+                    let combo_id = base_id.with("symbol_combo");
+                    egui::ComboBox::from_id_salt(combo_id)
                         .selected_text(
                             self.selected_symbol
                                 .as_ref()
-                                .cloned()
-                                .unwrap_or_else(|| "Select Symbol".to_string()),
+                                .map(|s| s.as_str())
+                                .unwrap_or("Select symbol"),
                         )
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.selected_symbol, None, "Select Symbol");
-                            for symbol in &symbols {
-                                ui.selectable_value(&mut self.selected_symbol, Some(symbol.clone()), symbol);
+                            if ui
+                                .selectable_label(self.selected_symbol.is_none(), "Select symbol")
+                                .clicked()
+                            {
+                                self.selected_symbol = None;
+                            }
+                            for sym in &symbols {
+                                let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
+                                if ui.selectable_label(selected, sym).clicked() {
+                                    self.selected_symbol = Some(sym.clone());
+                                }
                             }
                         });
                 });
 
-                // Chart type selector
-                ui.horizontal(|ui| {
-                    ui.label("Chart Type:");
-                    egui::ComboBox::from_id_salt(chart_type_combo_id)
-                        .selected_text(format!("{:?}", self.chart_type))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.chart_type, ChartType::LineChart, "Line Chart");
-                            ui.selectable_value(&mut self.chart_type, ChartType::CandlestickChart, "Candlestick Chart");
-                        });
-                });
+                ui.add_space(8.0);
 
-                ui.separator();
-
-                // Render chart if symbol is selected
-                if let Some(ref symbol) = self.selected_symbol {
-                    if let Some(price_data) = portfolio.get_price_history(symbol) {
-                        if price_data.is_empty() {
-                            ui.label("No price history available for this symbol.");
-                            ui.small("Historical data will be loaded automatically when available.");
-                            return;
-                        }
-
-                        match self.chart_type {
-                            ChartType::LineChart => {
-                                Self::render_line_chart_static(ui, symbol, price_data, base_id);
-                            }
-                            ChartType::CandlestickChart => {
-                                Self::render_candlestick_chart_static(ui, symbol, price_data, base_id);
-                            }
-                        }
+                if let Some(sym) = self.selected_symbol.clone() {
+                    if let Some(series) = portfolio.get_price_history(&sym) {
+                        render_line_plot(ui, &sym, series, base_id);
                     } else {
-                        ui.label("No price history available for this symbol.");
-                        ui.small("Historical data will be loaded automatically when available.");
+                        ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
                     }
                 } else {
-                    ui.label("Select a symbol to view its chart");
+                    ui.label("Choose a symbol to display its chart.");
                 }
             });
     }
@@ -124,137 +99,50 @@ impl PortfolioComponent for ChartsComponent {
         self.is_open = open;
     }
 
-    fn category(&self) -> crate::components::ComponentCategory {
-        crate::components::ComponentCategory::Charts
+    fn category(&self) -> ComponentCategory {
+        ComponentCategory::Charts
     }
 }
 
-impl ChartsComponent {
-    fn render_line_chart_static(
-        ui: &mut egui::Ui,
-        symbol: &str,
-        price_data: &[crate::portfolio::PricePoint],
-        base_id: Id,
-    ) {
-        // Convert price data to line points using close prices
-        let points: Vec<[f64; 2]> = price_data
-            .iter()
+fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_id: Id) {
+    if data.is_empty() {
+        ui.label("No data points available.");
+        return;
+    }
+
+    // Convert to PlotPoints using the index as x (demo-style).
+    let points: PlotPoints = PlotPoints::from_iter(
+        data.iter()
             .enumerate()
-            .map(|(i, point)| [i as f64, point.close])
-            .collect();
+            .map(|(i, p)| [i as f64, p.close]),
+    );
 
-        if points.is_empty() {
-            ui.label("No data points to display");
-            return;
-        }
-
-        // Calculate price change
-        let price_change = if let (Some(first), Some(last)) = (points.first(), points.last()) {
-            let change_pct = ((last[1] - first[1]) / first[1]) * 100.0;
-            Some((last[1] - first[1], change_pct))
-        } else {
-            None
-        };
-
-        // Show current price and change
-        if let Some((abs_change, pct_change)) = price_change {
-            ui.horizontal(|ui| {
-                ui.label(format!("{}:", symbol));
-                ui.label(format!("${:.2}", points.last().unwrap()[1]));
-                let color = if abs_change >= 0.0 { Color32::GREEN } else { Color32::RED };
-                let sign = if abs_change >= 0.0 { "+" } else { "" };
-                ui.colored_label(color, format!("{}{:.2} ({}{:.2}%)", sign, abs_change, sign, pct_change));
-            });
-        }
-
-        // Unique plot id for this component + symbol
-        let plot_id = base_id.with(format!("line_plot::{symbol}"));
-
-        Plot::new(plot_id)
-            .view_aspect(2.0)
-            .show(ui, |plot_ui| {
-                let color = if price_change.map(|(c, _)| c >= 0.0).unwrap_or(true) {
-                    Color32::GREEN
-                } else {
-                    Color32::RED
-                };
-
-                plot_ui.line(
-                    Line::new(PlotPoints::from(points))
-                        .name(format!("{} Close Price", symbol))
-                        .color(color)
-                        .stroke(Stroke::new(2.0, color)),
-                );
-            });
+    // Show a quick info row with last price and change
+    if let (Some(first), Some(last)) = (data.first(), data.last()) {
+        let abs = last.close - first.close;
+        let pct = (abs / first.close) * 100.0;
+        let color = if abs >= 0.0 { Color32::GREEN } else { Color32::RED };
+        ui.horizontal(|ui| {
+            ui.label(format!("{symbol}"));
+            ui.separator();
+            ui.label(format!("Last: {:.2}", last.close));
+            ui.colored_label(color, format!("{:+.2} ({:+.2}%)", abs, pct));
+        });
     }
 
-    fn render_candlestick_chart_static(
-        ui: &mut egui::Ui,
-        symbol: &str,
-        price_data: &[crate::portfolio::PricePoint],
-        base_id: Id,
-    ) {
-        // Simplified candlestick with lines (wick + body)
-        let mut high_line_points = Vec::new();
-        let mut low_line_points = Vec::new();
-        let mut close_line_points = Vec::new();
-
-        for (i, point) in price_data.iter().enumerate() {
-            let x = i as f64;
-            high_line_points.push([x, point.high]);
-            low_line_points.push([x, point.low]);
-            close_line_points.push([x, point.close]);
-        }
-
-        if close_line_points.is_empty() {
-            ui.label("No data points to display");
-            return;
-        }
-
-        // Show current price info
-        if let Some(last_point) = price_data.last() {
-            ui.horizontal(|ui| {
-                ui.label(format!("{}:", symbol));
-                ui.label(format!("O: ${:.2}", last_point.open));
-                ui.label(format!("H: ${:.2}", last_point.high));
-                ui.label(format!("L: ${:.2}", last_point.low));
-                ui.label(format!("C: ${:.2}", last_point.close));
-                let color = if last_point.close >= last_point.open { Color32::GREEN } else { Color32::RED };
-                let change = last_point.close - last_point.open;
-                let sign = if change >= 0.0 { "+" } else { "" };
-                ui.colored_label(color, format!("({}{:.2})", sign, change));
-            });
-        }
-
-        // Unique plot id for this component + symbol
-        let plot_id = base_id.with(format!("candle_plot::{symbol}"));
-
-        Plot::new(plot_id)
-            .view_aspect(2.0)
-            .show(ui, |plot_ui| {
-                // High line
-                plot_ui.line(
-                    Line::new(PlotPoints::from(high_line_points))
-                        .name("High")
-                        .color(Color32::LIGHT_GREEN)
-                        .stroke(Stroke::new(1.0, Color32::LIGHT_GREEN)),
-                );
-
-                // Low line
-                plot_ui.line(
-                    Line::new(PlotPoints::from(low_line_points))
-                        .name("Low")
-                        .color(Color32::LIGHT_RED)
-                        .stroke(Stroke::new(1.0, Color32::LIGHT_RED)),
-                );
-
-                // Close line (main)
-                plot_ui.line(
-                    Line::new(PlotPoints::from(close_line_points))
-                        .name("Close")
-                        .color(Color32::BLUE)
-                        .stroke(Stroke::new(2.0, Color32::BLUE)),
-                );
-            });
-    }
+    let plot_id = base_id.with(format!("plot_line::{symbol}"));
+    Plot::new(plot_id)
+        .legend(Legend::default())
+        .view_aspect(2.2)
+        .allow_scroll(false)
+        .allow_boxed_zoom(true)
+        .show(ui, |plot_ui| {
+            let color = Color32::from_rgb(80, 160, 255);
+            plot_ui.line(
+                Line::new(points)
+                    .name(format!("{symbol} Close"))
+                    .color(color)
+                    .stroke(Stroke::new(2.0, color)),
+            );
+        });
 }
