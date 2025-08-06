@@ -66,8 +66,8 @@ impl PortfolioComponent for CandlesComponent {
             return;
         }
 
-        // Base unique id namespace for this instance
-        let base_id = Id::new(self);
+        // Base unique id namespace for this instance derived from ui
+        let base_id = ui.id().with("candles_component");
         let window_id = base_id.with("window");
         let symbol_combo_id = base_id.with("symbol_combo");
         let timeframe_combo_id = base_id.with("timeframe_combo");
@@ -130,7 +130,7 @@ impl PortfolioComponent for CandlesComponent {
                             .iter()
                             .map(|pt| {
                                 (
-                                    to_unix_secs(pt.timestamp),
+                                    pt.timestamp.timestamp() as f64,
                                     pt.open,
                                     pt.high,
                                     pt.low,

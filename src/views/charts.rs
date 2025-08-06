@@ -32,8 +32,8 @@ impl PortfolioComponent for ChartsComponent {
             return;
         }
 
-        // Use a stable, namespaced base id for this instance, similar to egui demo patterns.
-        let base_id: Id = Id::new(self);
+        // Use UI-derived id namespace to avoid requiring Hash on self
+        let base_id: Id = ui.id().with("charts_component");
         let window_id = base_id.with("window");
         let symbol_combo_id = base_id.with("symbol_combo");
         let chart_type_combo_id = base_id.with("chart_type_combo");
