@@ -1,3 +1,4 @@
+#![allow(clippy::needless_pass_by_value)]
 //! Modular view components for different aspects of portfolio visualization
 //! 
 //! Each component is implemented in a separate file and follows the PortfolioComponent

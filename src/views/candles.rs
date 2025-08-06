@@ -1,4 +1,4 @@
-use egui::{self, Color32, Ui};
+use egui::{self, Color32, Id, Ui};
 use egui_plot::{Line, Plot, PlotPoints, PlotUi};
 use crate::components::PortfolioComponent;
 use crate::portfolio::Portfolio;
@@ -57,7 +57,6 @@ impl CandlesComponent {
             timeframe: Timeframe::Daily,
         }
     }
-    
 }
 
 impl PortfolioComponent for CandlesComponent {
@@ -67,11 +66,11 @@ impl PortfolioComponent for CandlesComponent {
             return;
         }
 
-        // Pre-compute IDs outside of closures to avoid borrow conflicts
-        let window_id = egui::Id::new(("candles_window", self as *const _ as usize));
-        let symbol_combo_id = egui::Id::new(("candles_symbol_combo", self as *const _ as usize));
-        let timeframe_combo_id = egui::Id::new(("candles_timeframe_combo", self as *const _ as usize));
-        let plot_id = egui::Id::new(("candles_plot", self as *const _ as usize));
+        // Base unique id namespace for this instance
+        let base_id = Id::new(self);
+        let window_id = base_id.with("window");
+        let symbol_combo_id = base_id.with("symbol_combo");
+        let timeframe_combo_id = base_id.with("timeframe_combo");
 
         egui::Window::new("Candles")
             .id(window_id)
@@ -145,7 +144,8 @@ impl PortfolioComponent for CandlesComponent {
                             candles = candles[candles.len() - 100..].to_vec();
                         }
 
-                        // Draw the candlestick plot
+                        // Draw the candlestick plot with a unique id per instance and symbol
+                        let plot_id = base_id.with(format!("candles_plot::{}", symbol));
                         Plot::new(plot_id)
                             .view_aspect(2.0)
                             .show(ui, |plot_ui| {
