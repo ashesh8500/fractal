@@ -80,6 +80,51 @@ impl ComponentManager {
             .map(|c| c.name())
             .collect()
     }
+    
+    pub fn component_names(&self) -> Vec<String> {
+        self.components.iter().map(|c| c.name().to_string()).collect()
+    }
+    
+    pub fn is_component_open(&self, name: &str) -> bool {
+        self.components.iter().enumerate()
+            .find(|(_, c)| c.name() == name)
+            .and_then(|(idx, _)| self.window_open.get(idx))
+            .copied()
+            .unwrap_or(false)
+    }
+    
+    pub fn set_component_open(&mut self, name: &str, open: bool) {
+        if let Some((idx, component)) = self.components.iter_mut().enumerate()
+            .find(|(_, c)| c.name() == name) {
+            if idx < self.window_open.len() {
+                self.window_open[idx] = open;
+            }
+            component.set_open(open);
+        }
+    }
+    
+    pub fn render_components_in_context(&mut self, ctx: &egui::Context, portfolio: &Portfolio, config: &Config) {
+        // Render open components in windows (demo-like detachable)
+        for (idx, component) in self.components.iter_mut().enumerate() {
+            if self.window_open.get(idx).copied().unwrap_or(component.is_open()) {
+                let mut open_state = true;
+                egui::Window::new(component.name())
+                    .open(&mut open_state)
+                    .show(ctx, |ui_win| {
+                        // Only render if component doesn't require data or portfolio has data
+                        if !component.requires_data() || portfolio.has_data() {
+                            component.render(ui_win, portfolio, config);
+                        } else {
+                            ui_win.weak("No data available for this component.");
+                        }
+                    });
+                if !open_state {
+                    self.window_open[idx] = false;
+                    component.set_open(false);
+                }
+            }
+        }
+    }
 }
 
 impl Default for ComponentManager {
