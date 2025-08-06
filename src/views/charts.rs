@@ -1,4 +1,4 @@
-use egui::{Color32, Id, Stroke, Ui};
+use egui::{Color, Color32, Id, Stroke, Ui};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use crate::components::{ComponentCategory, PortfolioComponent};
 use crate::portfolio::{Portfolio, PricePoint};
@@ -71,7 +71,7 @@ impl PortfolioComponent for ChartsComponent {
 
         if let Some(sym) = self.selected_symbol.clone() {
             if let Some(series) = portfolio.get_price_history(&sym) {
-                render_line_plot(ui, &sym, series);
+                render_line_plot(ui, base_id, &sym, series);
             } else {
                 ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
             }
@@ -97,7 +97,7 @@ impl PortfolioComponent for ChartsComponent {
     }
 }
 
-fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint]) {
+fn render_line_plot(ui: &mut Ui, base_id: Id, symbol: &str, data: &[PricePoint]) {
     if data.is_empty() {
         ui.label("No data points available.");
         return;
@@ -129,7 +129,7 @@ fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint]) {
         .legend(Legend::default())
         .view_aspect(2.2)
         .allow_scroll(false)
-        .allow_boxed_zoom)
+        .allow_boxed_zoom()
         .show(ui, |plot_ui| {
             let color = Color::from_rgb(80, 160, 255);
             plot_ui.line(
