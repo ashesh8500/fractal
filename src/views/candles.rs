@@ -26,68 +26,58 @@ impl PortfolioComponent for CandlesComponent {
             return;
         }
 
-        // Base id scoped to the current Ui path for this component
-        let window_id = ui.id().with("component::candles::window");
+        // Base id scoped to the current Ui path for this component (content-scope)
+        let base_id = ui.id().with("component::candles::content");
 
-        egui::Window::new("Candles")
-            .id(window_id)
-            .open(&mut self.is_open)
-            .default_width(900.0)
-            .default_height(560.0)
-            .show(ui.ctx(), |ui| {
-                // Derive a window-local base id
-                let base_id = ui.id().with("component::candles::content");
+        ui.heading("Candlestick (BoxPlot Demo)");
+        ui.separator();
 
-                ui.heading("Candlestick (BoxPlot Demo)");
-                ui.separator();
+        // Symbols list from holdings, sorted for stable ordering
+        let mut symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
+        symbols.sort();
 
-                // Symbols list from holdings, sorted for stable ordering
-                let mut symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
-                symbols.sort();
+        if symbols.is_empty() {
+            ui.label("No holdings available. Add holdings to view candles.");
+            return;
+        }
 
-                if symbols.is_empty() {
-                    ui.label("No holdings available. Add holdings to view candles.");
-                    return;
-                }
-
-                ui.horizontal(|ui| {
-                    ui.label("Symbol:");
-                    let combo_id = ui.id().with("candles_symbol_combo");
-                    egui::ComboBox::from_id_salt(combo_id)
-                        .selected_text(
-                            self.selected_symbol
-                                .as_ref()
-                                .map(|s| s.as_str())
-                                .unwrap_or("Select symbol"),
-                        )
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(self.selected_symbol.is_none(), "Select symbol")
-                                .clicked()
-                            {
-                                self.selected_symbol = None;
-                            }
-                            for sym in &symbols {
-                                let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
-                                if ui.selectable_label(selected, sym).clicked() {
-                                    self.selected_symbol = Some(sym.clone());
-                                }
-                            }
-                        });
-                });
-
-                ui.add_space(8.0);
-
-                if let Some(sym) = self.selected_symbol.clone() {
-                    if let Some(series) = portfolio.get_price_history(&sym) {
-                        render_boxplot_candles(ui, &sym, series, base_id);
-                    } else {
-                        ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
+        ui.horizontal(|ui| {
+            ui.label("Symbol:");
+            let combo_id = base_id.with("candles_symbol_combo");
+            egui::ComboBox::from_id_salt(combo_id)
+                .selected_text(
+                    self.selected_symbol
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("Select symbol"),
+                )
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.selected_symbol.is_none(), "Select symbol")
+                        .clicked()
+                    {
+                        self.selected_symbol = None;
                     }
-                } else {
-                    ui.label("Choose a symbol to display candlesticks.");
-                }
-            });
+                    for sym in &symbols {
+                        let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
+                        if ui.selectable_label(selected, sym).clicked() {
+                            self.selected_symbol = Some(sym.clone());
+                        }
+                    }
+                });
+        });
+
+        ui.add_space(8.0);
+
+        if let Some(sym) = self.selected_symbol.clone() {
+            if let Some(series) = portfolio.get_price_history(&sym) {
+                render_boxplot_candles(ui, &sym, series, base_id);
+            } else {
+                ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
+            }
+        } else {
+            ui.label("Choose a symbol to display candlesticks.");
+        }
     }
 
     fn name(&self) -> &str {
@@ -154,7 +144,7 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         boxes.push(be);
     }
 
-    // Plot id scoped to this window content to avoid collisions
+    // Plot id scoped under the content base_id to avoid collisions
     let plot_id = base_id.with(("candles_boxplot_plot", symbol));
     Plot::new(plot_id)
         .legend(Legend::default())

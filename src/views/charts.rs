@@ -27,68 +27,57 @@ impl PortfolioComponent for ChartsComponent {
         }
 
         // Derive a unique, stable base Id from the current Ui path for this component.
-        let base_id: Id = ui.id().with("component::charts");
-        let window_id = base_id.with("window");
+        let base_id: Id = ui.id().with("component::charts::content");
 
-        egui::Window::new("Charts")
-            .id(window_id)
-            .open(&mut self.is_open)
-            .default_width(900.0)
-            .default_height(560.0)
-            .show(ui.ctx(), |ui| {
-                // Within the window, derive a new base from the inner Ui to avoid clashes
-                let _base_id = ui.id().with("component::charts::window");
+        ui.heading("Portfolio Charts (Demo Line Plot)");
+        ui.separator();
 
-                ui.heading("Portfolio Charts (Demo Line Plot)");
-                ui.separator();
+        let mut symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
+        symbols.sort();
 
-                let mut symbols: Vec<String> = portfolio.holdings.keys().cloned().collect();
-                symbols.sort();
+        if symbols.is_empty() {
+            ui.label("No holdings found. Add holdings to view charts.");
+            return;
+        }
 
-                if symbols.is_empty() {
-                    ui.label("No holdings found. Add holdings to view charts.");
-                    return;
-                }
-
-                ui.horizontal(|ui| {
-                    ui.label("Symbol:");
-                    // Use unique salt for ComboBox derived from the local Ui path
-                    let combo_id = ui.id().with("charts_symbol_combo");
-                    egui::ComboBox::from_id_salt(combo_id)
-                        .selected_text(
-                            self.selected_symbol
-                                .as_ref()
-                                .map(|s| s.as_str())
-                                .unwrap_or("Select symbol"),
-                        )
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(self.selected_symbol.is_none(), "Select symbol")
-                                .clicked()
-                            {
-                                self.selected_symbol = None;
-                            }
-                            for sym in &symbols {
-                                let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
-                                if ui.selectable_label(selected, sym).clicked() {
-                                    self.selected_symbol = Some(sym.clone());
-                                }
-                            }
-                        });
-                });
-
-                ui.add_space(8.0);
-
-                if let Some(sym) = self.selected_symbol.clone() {
-                    if let Some(series) = portfolio.get_price_history(&sym) {
-                        render_line_plot(ui, &sym, series);
-                    } else {
-                        ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
+        ui.horizontal(|ui| {
+            ui.label("Symbol:");
+            // Use unique salt for ComboBox derived from the local Ui path
+            let combo_id = base_id.with("charts_symbol_combo");
+            egui::ComboBox::from_id_salt(combo_id)
+                .selected_text(
+                    self.selected_symbol
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("Select symbol"),
+                )
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.selected_symbol.is_none(), "Select symbol")
+                        .clicked()
+                    {
+                        self.selected_symbol = None;
                     }
-                } else {
-                    ui.label("Choose a symbol to display its chart.");
-                }
-            });
+                    for sym in &symbols {
+                        let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
+                        if ui.selectable_label(selected, sym).clicked() {
+                            self.selected_symbol = Some(sym.clone());
+                        }
+                    }
+                });
+        });
+
+        ui.add_space(8.0);
+
+        if let Some(sym) = self.selected_symbol.clone() {
+            if let Some(series) = portfolio.get_price_history(&sym) {
+                render_line_plot(ui, &sym, series);
+            } else {
+                ui.colored_label(Color32::YELLOW, "No price history for selected symbol.");
+            }
+        } else {
+            ui.label("Choose a symbol to display its chart.");
+        }
     }
 
     fn name(&self) -> &str {
