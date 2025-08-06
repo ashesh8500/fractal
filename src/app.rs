@@ -1,4 +1,4 @@
-use crate::::ApiClient;
+use crate::api::ApiClient;
 use crate::components::ComponentManager;
 use crate::state::AppState;
 use std::sync::{Arc, Mutex};
@@ -83,7 +83,7 @@ impl Default for TemplateApp {
 
             // Portfolio functionality:
             app_state: AppState::default(),
-            api_client::new("http://localhost:8000/api/v1"),
+            api_client: ApiClient::new("http://localhost:8000/api/v1"),
             component_manager: ComponentManager::new(),
             show_portfolio_panel: false,
             selected_portfolio: None,
@@ -145,6 +145,4 @@ impl TemplateApp {
 
         app
     }
-
-    // ... (rest of the file unchanged; omitted for brevity)
 }

@@ -1,10 +1,17 @@
 use egui::{self, Color32, Ui};
-use egui::plot::{Line, Plot, PlotPoints, PlotRect, PlotUi, Stroke};
+use egui::plot::{Line, Plot, PlotPoints, PlotUi, Stroke};
 use crate::components::PortfolioComponent;
-use crate::portfolio::{Portfolio, Timeframe, PricePoint};
+use crate::portfolio::{Portfolio, PricePoint};
 use crate::state::Config;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timeframe {
+    Daily,
+    Weekly,
+    Monthly,
+}
 
 /// Helper function to convert a `DateTime<Utc>` into Unix seconds (as f64)
 fn to_unix_secs(timestamp: DateTime<Utc>) -> f64 {
@@ -23,20 +30,16 @@ fn draw_candles(plot_ui: &mut PlotUi, candles: &[(f64, f64, f64, f64, f64)]) {
                 .color(Color32::WHITE),
         );
 
-        // Draw the body as a rectangle
+        // Draw the body as a rectangle using line thickness to emulate body
         let body_height = (close - open).abs();
-        let body_y = (open + close) / 2.0;
+        let body_y_top = open.max(close);
+        let body_y_bottom = open.min(close);
 
-        plot_ui.rect(
-            PlotRect::new(
-                timestamp - 0.2,
-                body_y - body_height / 2.0,
-                0.4,
-                body_height,
-            ),
-        )
-        .color(color)
-        .stroke(Stroke::new(1.0, Color32::WHITE));
+        plot_ui.line(
+            Line::new(PlotPoints::from(vec![[timestamp, body_y_top], [timestamp, body_y_bottom]]))
+                .color(color)
+                .width((body_height.max(0.5)) as f32),
+        );
     }
 }
 
@@ -87,7 +90,8 @@ impl PortfolioComponent for CandlesComponent {
                         .selected_text(
                             self.selected_symbol
                                 .as_ref()
-                                .map_or("Select".to_string(), |s| s.clone()),
+                                .cloned()
+                                .unwrap_or_else(|| "Select".to_string()),
                         )
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.selected_symbol, None, "Select");
@@ -141,7 +145,9 @@ impl PortfolioComponent for CandlesComponent {
                             .view_aspect(2.0)
                             .show(ui, |plot_ui| {
                                 draw_candles(plot_ui, &candles);
-                            // Summary of price change over the displayed period
+                            });
+
+                        // Summary of price change over the displayed period
                         ui.add_space(10.0);
                         if let (Some(first), Some(last)) = (candles.first(), candles.last()) {
                             let change = ((last.4 - first.1) / first.1) * 100.0;

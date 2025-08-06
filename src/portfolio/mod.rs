@@ -1,3 +1,4 @@
+#![allow(clippy::needless_pass_by_value)]
 //! Portfolio data models and types
 //! 
 //! This module contains the core Portfolio struct that serves as the central
@@ -25,7 +26,8 @@ pub struct Portfolio {
     
     #[serde(default)]
     pub risk_metrics: RiskMetrics,
-(default)]
+    
+    #[serde(default)]
     pub performance_metrics: PerformanceMetrics,
     
     #[serde(default = "default_data_provider")]

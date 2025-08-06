@@ -1,3 +1,4 @@
+#![allow(clippy::needless_pass_by_value)]
 //! Component system for modular UI rendering
 //! 
 //! This module defines the trait lifecycle. Each component receives a `Portfolio` and `Config` as parameters
@@ -5,17 +6,18 @@
 
 use crate::portfolio::Portfolio;
 use crate::state::Config;
+use egui::Ui;
 
 pub mod manager;
 pub mod status;
 
 pub use manager::ComponentManager;
-pub use status take `Portfolio` + `Config` as input
-/// and render their specific view. This follows functional programming principles
-/// with immutable data flow.
+pub use status::DataProviderStatusComponent;
+
+/// Trait for UI components that render against a shared Portfolio and Config
 pub trait PortfolioComponent {
     /// Render the component
-    fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, config: &Config);
+    fn render(&mut self, ui: &mut Ui, portfolio: &Portfolio, config: &Config);
     
     /// Get component name for UI display
     fn name(&self) -> &str;

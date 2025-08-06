@@ -61,6 +61,7 @@ impl PortfolioComponent for DataProviderStatusComponent {
                 ui.monospace("export ALPHAVANTAGE_API_KEY=your_key_here");
             } else {
                 ui.weak("Tip: Use 'Fetch Price History' to load data for the selected portfolio.");
+            }
         } else {
             ui.weak("Tip: Switch to Native mode from the Portfolio menu or left panel to fetch directly from.");
         }
