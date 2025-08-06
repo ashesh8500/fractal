@@ -326,7 +326,7 @@ impl TemplateApp {
                 
                 // Connection section with demo-style layout
                 ui.collapsing("🔗 Connection", |ui| {
-                    egui::Grid::new("connection_grid")
+                    egui::Grid::new(ui.id().with("connection_grid"))  // Salted ID
                         .num_columns(2)
                         .spacing([8.0, 4.0])
                         .show(ui, |ui| {
@@ -393,7 +393,7 @@ impl TemplateApp {
             
             if is_selected {
                 ui.separator();
-                egui::Grid::new(format!("portfolio_details_{}", name))
+                egui::Grid::new(ui.id().with(("portfolio_details", name)))  // Salted with ui.id() and name
                     .num_columns(2)
                     .spacing([8.0, 2.0])
                     .show(ui, |ui| {
@@ -616,18 +616,6 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        // Render components using the component manager
-        if let (Some(portfolios), Some(selected_name)) = (
-            &self.app_state.portfolios,
-            &self.selected_portfolio,
-        ) {
-            if let Some(portfolio) = portfolios.get(selected_name) {
-                self.component_manager.render_components_in_context(
-                    ctx,
-                    portfolio,
-                    &self.app_state.config,
-                );
-            }
-        }
+        // No need for duplicate window rendering; handled in render_all
     }
 }

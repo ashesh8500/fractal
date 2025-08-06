@@ -35,7 +35,8 @@ impl ComponentManager {
     
     pub fn render_all(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, config: &Config) {
         // Create tabs/strip of component toggles (demo-like top bar)
-        egui::TopBottomPanel::top("component_tabs").show_inside(ui, |ui| {
+        egui::TopBottomPanel::top(ui.id().with("component_tabs"))  // Salted ID
+            .show_inside(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for (idx, component) in self.components.iter_mut().enumerate() {

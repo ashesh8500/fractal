@@ -23,7 +23,7 @@ impl PortfolioComponent for DashboardComponent {
         ui.add_space(4.0);
         ui.separator();
         
-        egui::Grid::new(base_id.with(("dashboard", "portfolio_overview")))
+        egui::Grid::new(base_id.with("portfolio_overview"))  // Simplified salted ID
             .num_columns(2)
             .spacing([40.0, 6.0])
             .striped(true)
@@ -48,7 +48,7 @@ impl PortfolioComponent for DashboardComponent {
         
         ui.separator();
         ui.heading("Risk Metrics");
-        egui::Grid::new(base_id.with(("dashboard", "risk_metrics")))
+        egui::Grid::new(base_id.with("risk_metrics"))
             .num_columns(2)
             .spacing([40.0, 6.0])
             .striped(true)
@@ -74,7 +74,7 @@ impl PortfolioComponent for DashboardComponent {
         
         ui.separator();
         ui.heading("Performance Metrics");
-        egui::Grid::new(base_id.with(("dashboard", "performance_metrics")))
+        egui::Grid::new(base_id.with("performance_metrics"))
             .num_columns(2)
             .spacing([40.0, 6.0])
             .striped(true)
