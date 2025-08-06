@@ -1,5 +1,5 @@
 use egui::{self, Color32, Ui};
-use egui_plot::{BoxElem, BoxPlot, BoxPlotPolicy, Legend, Plot};
+use egui_plot::{BoxElem, BoxPlot, BoxSpread, Legend, Plot};
 use crate::components::{ComponentCategory, PortfolioComponent};
 use crate::portfolio::{Portfolio, PricePoint};
 use crate::state::Config;
@@ -121,12 +121,12 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         data
     };
 
-    // Build box elements from OHLC. We'll use:
-    // - whisker_min: low
-    // - quartile1: min(open, close)
-    // - median: (open + close)/2
-    // - quartile3: max(open, close)
-    // - whisker_max: high
+    // Build box elements from OHLC using quartiles representation:
+    // whisker_low = low
+    // q1 = min(open, close)
+    // median = (open + close)/2
+    // q3 = max(open, close)
+    // whisker_high = high
     let mut boxes = Vec::with_capacity(slice.len());
     for (i, p) in slice.iter().enumerate() {
         let low = p.low;
@@ -138,15 +138,16 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         };
         let median = 0.5 * (p.open + p.close);
 
-        // Place each box at its index; x is f64
-        let mut be = BoxElem::new(i as f64, q1, q3)
-            .whisker_low(low)
-            .whisker_high(high)
-            .median(median);
+        let spread = BoxSpread::new_quartiles(low, q1, median, q3, high);
+        let mut be = BoxElem::new(i as f64, spread);
 
         // Color depending on up/down day
         let up = p.close >= p.open;
-        let fill = if up { Color32::from_rgb(0, 180, 0) } else { Color32::from_rgb(200, 40, 40) };
+        let fill = if up {
+            Color32::from_rgb(0, 180, 0)
+        } else {
+            Color32::from_rgb(200, 40, 40)
+        };
         be = be.fill(fill).stroke(egui::Stroke::new(1.0, Color32::WHITE));
 
         boxes.push(be);
@@ -159,9 +160,7 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         .allow_scroll(false)
         .allow_boxed_zoom(true)
         .show(ui, |plot_ui| {
-            let mut bp = BoxPlot::new(boxes).name(format!("{symbol} OHLC"));
-            // For candlesticks we want to show all data, no outlier filtering:
-            bp = bp.box_plot_policy(BoxPlotPolicy::Constant(0.0));
+            let bp = BoxPlot::new(boxes).name(format!("{symbol} OHLC"));
             plot_ui.box_plot(bp);
         });
 }

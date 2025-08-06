@@ -37,7 +37,7 @@ impl PortfolioComponent for ChartsComponent {
             .default_height(560.0)
             .show(ui.ctx(), |ui| {
                 // Within the window, derive a new base from the inner Ui to avoid clashes
-                let base_id = ui.id().with("component::charts::window");
+                let _base_id = ui.id().with("component::charts::window");
 
                 ui.heading("Portfolio Charts (Demo Line Plot)");
                 ui.separator();
@@ -115,7 +115,7 @@ fn render_line_plot(ui: &mut Ui, symbol: &str, data: &[PricePoint]) {
     }
 
     // Convert to PlotPoints using the index as x (demo-style).
-    let points: PlotPoints = PlotPoints::from_iter(
+    let points: PlotPoints<'_> = PlotPoints::from_iter(
         data.iter()
             .enumerate()
             .map(|(i, p)| [i as f64, p.close]),
