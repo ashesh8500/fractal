@@ -138,7 +138,8 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         };
         let median = 0.5 * (p.open + p.close);
 
-        let spread = BoxSpread::new_quartiles(low, q1, median, q3, high);
+        // egui_plot 0.31: construct BoxSpread using `new(lower_whisker, q1, median, q3, upper_whisker)`
+        let spread = BoxSpread::new(low, q1, median, q3, high);
         let mut be = BoxElem::new(i as f64, spread);
 
         // Color depending on up/down day
