@@ -37,6 +37,10 @@ pub trait PortfolioComponent {
     fn requires_data(&self) -> bool {
         true
     }
+
+    /// Optional hook: called when portfolio data (e.g., price history) was updated.
+    /// Default is no-op; components can override to validate/reset internal state.
+    fn on_data_updated(&mut self, _portfolio: &Portfolio) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]

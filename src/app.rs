@@ -225,10 +225,13 @@ impl TemplateApp {
                                 Ok(price_points) => {
                                     log::info!("Updating portfolio {} with {} price points for {}", selected_name, price_points.len(), symbol);
                                     
-                                    // Instead of replacing, merge with existing history
+                                    // Merge with existing history
                                     let mut history_map = portfolio.price_history.clone().unwrap_or_default();
                                     history_map.insert(symbol.clone(), price_points);
                                     portfolio.update_price_history(history_map);
+
+                                    // Notify components that data has changed
+                                    self.component_manager.notify_data_updated(portfolio);
                                     
                                     log::info!("Portfolio now has price history for {} symbols", 
                                         portfolio.price_history.as_ref().map(|h| h.len()).unwrap_or(0));
@@ -242,6 +245,9 @@ impl TemplateApp {
                 }
             }
         }
+
+        // Repaint after handling results so Charts/Candles refresh ASAP
+        // Actual repaint happens in update() loop; this ensures the frame doesn't stall.
     }
 
     fn process_fetch_queue(&mut self, ctx: &egui::Context) {
@@ -703,7 +709,7 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
         ui.label(" and ");
         ui.hyperlink_to(
             "eframe",
-            "https://github.com/emilk/egui/tree/main/crates/eframe",
+            "https://github.com/emilk/eframe",
         );
         ui.label(".");
     });
@@ -767,6 +773,8 @@ impl eframe::App for TemplateApp {
                     self.selected_portfolio = None;
                 }
             }
+            // Ensure UI updates after deletion
+            ctx.request_repaint();
         }
 
         // Top panel with menu bar

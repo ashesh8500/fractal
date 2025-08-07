@@ -73,6 +73,13 @@ impl ComponentManager {
             }
         }
     }
+
+    /// Notify all components that portfolio data was updated (e.g., new price history merged).
+    pub fn notify_data_updated(&mut self, portfolio: &Portfolio) {
+        for component in self.components.iter_mut() {
+            component.on_data_updated(portfolio);
+        }
+    }
     
     pub fn get_components_by_category(&self, category: ComponentCategory) -> Vec<&str> {
         self.components
