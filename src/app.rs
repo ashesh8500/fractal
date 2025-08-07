@@ -60,6 +60,10 @@ pub struct TemplateApp {
     // Portfolio marked for deletion (handled in update loop)
     #[serde(skip)]
     portfolio_to_delete: Option<String>,
+    
+    // Tokio runtime handle for background async operations
+    #[serde(skip)]
+    rt_handle: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +81,8 @@ pub struct AsyncState {
     pub portfolios_result: Option<Result<Vec<crate::portfolio::Portfolio>, String>>,
     // symbol -> price history loaded
     pub price_history_results: Vec<(String, Result<Vec<crate::portfolio::PricePoint>, String>)>,
+    // Currently fetching symbols
+    pub fetching_symbols: std::collections::HashSet<String>,
 }
 
 impl Default for TemplateApp {
@@ -102,6 +108,7 @@ impl Default for TemplateApp {
             last_selected_portfolio: None,
             last_error_message: None,
             portfolio_to_delete: None,
+            rt_handle: None,  // Will be set properly in new()
         }
     }
 }
@@ -133,9 +140,19 @@ impl TemplateApp {
         app.async_state = Arc::new(Mutex::new(AsyncState::default()));
         // fetch_queue is not an Option; it is always present. Ensure it is.
         app.fetch_queue = Arc::new(Mutex::new(Vec::new()));
+        
+        // Create Tokio runtime in a background thread
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+        std::thread::spawn(move || {
+            rt.block_on(async {
+                futures::future::pending::<()>().await;  // Keeps runtime alive indefinitely
+            });
+        });
+        app.rt_handle = Some(handle);
 
-        // If no portfolios exist and we're in native mode, create a quick demo portfolio to enable charts
-        if app.app_state.portfolios.is_none() && app.app_state.config.use_native_provider {
+        // If no portfolios exist, create a quick demo portfolio to enable charts
+        if app.app_state.portfolios.is_none() {
             let mut demo = crate::portfolio::Portfolio::new("Demo".to_string());
             demo.holdings.insert("AAPL".to_string(), 10.0);
             demo.holdings.insert("MSFT".to_string(), 5.0);
@@ -191,9 +208,15 @@ impl TemplateApp {
                         if let Some(portfolio) = portfolios.get_mut(selected_name) {
                             match result {
                                 Ok(price_points) => {
-                                    let mut history_map = HashMap::new();
+                                    log::info!("Updating portfolio {} with {} price points for {}", selected_name, price_points.len(), symbol);
+                                    
+                                    // Instead of replacing, merge with existing history
+                                    let mut history_map = portfolio.price_history.clone().unwrap_or_default();
                                     history_map.insert(symbol.clone(), price_points);
                                     portfolio.update_price_history(history_map);
+                                    
+                                    log::info!("Portfolio now has price history for {} symbols", 
+                                        portfolio.price_history.as_ref().map(|h| h.len()).unwrap_or(0));
                                 }
                                 Err(e) => {
                                     self.last_error_message = Some(format!("Failed to load price history for {}: {}", symbol, e));
@@ -210,6 +233,7 @@ impl TemplateApp {
         if let Ok(mut queue) = self.fetch_queue.try_lock() {
             if !queue.is_empty() {
                 let symbols_to_fetch: Vec<String> = queue.drain(..).collect();
+                log::info!("Processing fetch queue with {} items", symbols_to_fetch.len());
                 for symbol in symbols_to_fetch {
                     self.fetch_price_history_async(symbol, ctx);
                 }
@@ -226,10 +250,15 @@ impl TemplateApp {
                 if let Some(portfolios) = &self.app_state.portfolios {
                     if let Some(portfolio) = portfolios.get(portfolio_name) {
                         if let Ok(mut queue) = self.fetch_queue.try_lock() {
+                            let mut symbols_added = Vec::new();
                             for symbol in portfolio.holdings.keys() {
                                 if !queue.contains(symbol) {
                                     queue.push(symbol.clone());
+                                    symbols_added.push(symbol.clone());
                                 }
+                            }
+                            if !symbols_added.is_empty() {
+                                log::info!("Queued history fetch for symbols: {:?}", symbols_added);
                             }
                         }
                     }
@@ -242,29 +271,79 @@ impl TemplateApp {
         let api_client = self.api_client.clone();
         let async_state = Arc::clone(&self.async_state);
         let ctx = ctx.clone();
+        let ctx2 = ctx.clone();
         
-        tokio::spawn(async move {
+        // Mark symbol as being fetched
+        if let Ok(mut state) = self.async_state.try_lock() {
+            state.fetching_symbols.insert(symbol.clone());
+        }
+        
+        // Request immediate repaint to show spinner
+        ctx.request_repaint();
+        
+        log::info!("Spawning fetch for symbol: {}", symbol);
+        
+        if let Some(handle) = &self.rt_handle {
+            handle.spawn(async move {
+            log::debug!("Starting fetch for symbol: {}", symbol);
+            let start = std::time::Instant::now();
+            
             let result = api_client
                 .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
                 .await;
             
+            log::info!("Fetch for {} completed in {:?}", symbol, start.elapsed());
+            
             let price_points = match result {
                 Ok(mut history_map) => {
                     if let Some(points) = history_map.remove(&symbol) {
+                        log::info!("Got {} price points for {}", points.len(), symbol);
                         Ok(points)
                     } else {
+                        log::warn!("No price history found for symbol {}", symbol);
                         Err("No price history found for symbol".to_string())
                     }
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => {
+                    log::error!("Error fetching {}: {}", symbol, e);
+                    Err(e.to_string())
+                }
             };
             
             if let Ok(mut state) = async_state.lock() {
-                state.price_history_results.push((symbol, price_points));
+                state.fetching_symbols.remove(&symbol);
+                state.price_history_results.push((symbol.clone(), price_points));
+                log::debug!("Updated async state for {}", symbol);
             }
             
-            ctx.request_repaint();
-        });
+            ctx2.request_repaint();
+            });
+        } else {
+            log::warn!("Runtime handle not available, falling back to tokio::spawn");
+            tokio::spawn(async move {
+                let result = api_client
+                    .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
+                    .await;
+                
+                let price_points = match result {
+                    Ok(mut history_map) => {
+                        if let Some(points) = history_map.remove(&symbol) {
+                            Ok(points)
+                        } else {
+                            Err("No price history found for symbol".to_string())
+                        }
+                    }
+                    Err(e) => Err(e.to_string()),
+                };
+                
+                if let Ok(mut state) = async_state.lock() {
+                    state.fetching_symbols.remove(&symbol);
+                    state.price_history_results.push((symbol, price_points));
+                }
+                
+                ctx.request_repaint();
+            });
+        }
     }
 
     fn render_portfolio_panel(&mut self, ctx: &egui::Context) {
@@ -347,19 +426,57 @@ impl TemplateApp {
                             }
                             ui.end_row();
                             
+                            ui.label("Provider:");
+                            if self.app_state.config.use_native_provider {
+                                ui.colored_label(egui::Color32::LIGHT_BLUE, "Native (Alpha Vantage)");
+                            } else {
+                                ui.colored_label(egui::Color32::LIGHT_GREEN, "Server Backend");
+                            }
+                            ui.end_row();
+                            
                             ui.label("API:");
                             ui.small(&self.app_state.config.api_base_url);
                             ui.end_row();
                         });
                     
-                    if ui.button("Test Connection").clicked() {
-                        self.test_connection_async(ctx);
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Test Connection").clicked() {
+                            self.test_connection_async(ctx);
+                        }
+                        
+                        let switch_text = if self.app_state.config.use_native_provider {
+                            "Switch to Server"
+                        } else {
+                            "Switch to Native"
+                        };
+                        
+                        if ui.button(switch_text).on_hover_text("Toggle data provider").clicked() {
+                            self.toggle_data_provider();
+                        }
+                    });
                     
                     if !self.test_message.is_empty() {
                         ui.small(&self.test_message);
                     }
                 });
+                
+                // Live fetch status section
+                if let Ok(state) = self.async_state.try_lock() {
+                    if !state.fetching_symbols.is_empty() {
+                        ui.separator();
+                        ui.collapsing("📡 Live Data Fetching", |ui| {
+                            ui.small(format!("Fetching {} symbol(s):", state.fetching_symbols.len()));
+                            ui.indent("fetching_list", |ui| {
+                                for symbol in &state.fetching_symbols {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.small(symbol);
+                                    });
+                                }
+                            });
+                        });
+                    }
+                }
             });
     }
     
@@ -456,15 +573,27 @@ impl TemplateApp {
         let async_state = Arc::clone(&self.async_state);
         let ctx = ctx.clone();
         
-        tokio::spawn(async move {
-            let result = api_client.test_health().await;
-            
-            if let Ok(mut state) = async_state.lock() {
-                state.connection_result = Some(result.map_err(|e| e.to_string()));
-            }
-            
-            ctx.request_repaint();
-        });
+        if let Some(handle) = &self.rt_handle {
+            handle.spawn(async move {
+                let result = api_client.test_health().await;
+                
+                if let Ok(mut state) = async_state.lock() {
+                    state.connection_result = Some(result.map_err(|e| e.to_string()));
+                }
+                
+                ctx.request_repaint();
+            });
+        } else {
+            tokio::spawn(async move {
+                let result = api_client.test_health().await;
+                
+                if let Ok(mut state) = async_state.lock() {
+                    state.connection_result = Some(result.map_err(|e| e.to_string()));
+                }
+                
+                ctx.request_repaint();
+            });
+        }
     }
     
     fn create_sample_portfolio(&mut self) {
@@ -494,6 +623,29 @@ impl TemplateApp {
             portfolios.insert(portfolio.name.clone(), portfolio.clone());
             self.selected_portfolio = Some(portfolio.name);
         }
+    }
+    
+    fn toggle_data_provider(&mut self) {
+        // Toggle the provider mode
+        self.app_state.config.use_native_provider = !self.app_state.config.use_native_provider;
+        
+        // Recreate API client with new settings
+        let use_native = self.app_state.config.use_native_provider;
+        let key = self.app_state.config.alphavantage_api_key.clone();
+        self.api_client = ApiClient::new(&self.app_state.config.api_base_url)
+            .with_native(use_native, key);
+        
+        // Reset connection status
+        self.connection_status = ConnectionStatus::Disconnected;
+        
+        // Update test message
+        if use_native {
+            self.test_message = "Switched to Native (Alpha Vantage) provider".to_string();
+        } else {
+            self.test_message = "Switched to Server Backend provider".to_string();
+        }
+        
+        log::info!("Data provider switched to: {}", if use_native { "Native" } else { "Server" });
     }
 }
 
@@ -528,6 +680,13 @@ impl eframe::App for TemplateApp {
 
         // Check for portfolio selection change and queue fetches as needed
         self.handle_portfolio_selection_change();
+        
+        // Request continuous updates while fetching
+        if let Ok(state) = self.async_state.try_lock() {
+            if !state.fetching_symbols.is_empty() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
         
         // Handle portfolio deletion
         if let Some(portfolio_to_delete) = self.portfolio_to_delete.take() {
