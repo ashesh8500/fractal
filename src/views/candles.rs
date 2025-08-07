@@ -41,6 +41,11 @@ impl PortfolioComponent for CandlesComponent {
             return;
         }
 
+        // Auto-select first symbol if none selected
+        if self.selected_symbol.is_none() && !symbols.is_empty() {
+            self.selected_symbol = Some(symbols[0].clone());
+        }
+        
         ui.horizontal(|ui| {
             ui.label("Symbol:");
             let combo_id = base_id.with(("candles", "symbol_combo"));
@@ -52,12 +57,6 @@ impl PortfolioComponent for CandlesComponent {
                         .unwrap_or("Select symbol"),
                 )
                 .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(self.selected_symbol.is_none(), "Select symbol")
-                        .clicked()
-                    {
-                        self.selected_symbol = None;
-                    }
                     for sym in &symbols {
                         let selected = self.selected_symbol.as_deref() == Some(sym.as_str());
                         if ui.selectable_label(selected, sym).clicked() {

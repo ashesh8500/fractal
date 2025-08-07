@@ -56,8 +56,8 @@ impl Default for Config {
             default_data_provider: "yfinance".to_string(),
             refresh_interval_seconds: 300, // 5 minutes
             chart_theme: ChartTheme::Auto,
-            // Defaults for native mode
-            use_native_provider: false,
+            // Defaults for native mode (enabled for testing)
+            use_native_provider: true,
             alphavantage_api_key: std::env::var("ALPHAVANTAGE_API_KEY").ok(),
         }
     }

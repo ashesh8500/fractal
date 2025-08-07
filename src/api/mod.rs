@@ -288,9 +288,9 @@ impl ApiClient {
         let mut result = HashMap::new();
 
         for symbol in symbols {
-            // Use TIME_SERIES_DAILY_ADJUSTED as a practical default
+            // Use TIME_SERIES_DAILY (free tier) instead of TIME_SERIES_DAILY_ADJUSTED (premium)
             let url = format!(
-                "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&outputsize=compact&apikey={}",
+                "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={}&outputsize=compact&apikey={}",
                 urlencoding::encode(symbol),
                 key
             );
@@ -302,14 +302,37 @@ impl ApiClient {
                 )));
             }
             let v: Value = resp.json().await?;
+            
+            // Log the full response for debugging
+            log::debug!("Alpha Vantage response for {}: {}", symbol, serde_json::to_string_pretty(&v).unwrap_or_default());
 
             // Response has "Time Series (Daily)": { "YYYY-MM-DD": { "1. open": "...", ... }, ... }
             let Some(ts) = v.get("Time Series (Daily)") else {
-                // Error messages might be at "Note" or "Error Message"
+                // Check for various error conditions in Alpha Vantage responses
                 if let Some(note) = v.get("Note").and_then(|n| n.as_str()) {
+                    log::warn!("Alpha Vantage rate limit hit: {}", note);
                     return Err(ApiError::RateLimited(note.into()));
                 }
-                return Err(ApiError::Parsing("Missing time series in Alpha Vantage response".into()));
+                if let Some(error) = v.get("Error Message").and_then(|e| e.as_str()) {
+                    log::error!("Alpha Vantage error: {}", error);
+                    return Err(ApiError::Parsing(format!("Alpha Vantage API error: {}", error)));
+                }
+                if let Some(info) = v.get("Information").and_then(|i| i.as_str()) {
+                    log::warn!("Alpha Vantage info message: {}", info);
+                    return Err(ApiError::RateLimited(info.into()));
+                }
+                
+                // Log the full response structure to help debug
+                let available_keys: Vec<String> = v.as_object()
+                    .map(|obj| obj.keys().cloned().collect())
+                    .unwrap_or_default();
+                    
+                return Err(ApiError::Parsing(format!(
+                    "Missing time series in Alpha Vantage response for {}. Available keys: {:?}. Response: {}", 
+                    symbol, 
+                    available_keys,
+                    serde_json::to_string(&v).unwrap_or_default()
+                )));
             };
 
             let mut points: Vec<PricePoint> = Vec::new();
@@ -328,7 +351,7 @@ impl ApiClient {
                     let high = get_num(fields, "2. high")?;
                     let low = get_num(fields, "3. low")?;
                     let close = get_num(fields, "4. close")?;
-                    let volume = get_num(fields, "6. volume")? as u64;
+                    let volume = get_num(fields, "5. volume")? as u64;
 
                     points.push(PricePoint {
                         timestamp: dt,

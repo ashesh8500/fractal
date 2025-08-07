@@ -10,7 +10,7 @@ if portfolio_lib_path not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend_server.app.routes import api_router
+from .routes import api_router
 
 app = FastAPI(title="Portfolio Backend Server")
 

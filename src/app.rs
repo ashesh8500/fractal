@@ -166,6 +166,21 @@ impl TemplateApp {
             app.selected_portfolio = Some("Demo".to_string());
         }
 
+        // Queue initial fetches for the selected portfolio's holdings so charts/candles have data.
+        if let Some(selected) = app.selected_portfolio.clone() {
+            if let Some(portfolios) = &app.app_state.portfolios {
+                if let Some(p) = portfolios.get(&selected) {
+                    if let Ok(mut q) = app.fetch_queue.try_lock() {
+                        for sym in p.holdings.keys() {
+                            if !q.contains(sym) {
+                                q.push(sym.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         app
     }
 
@@ -320,6 +335,7 @@ impl TemplateApp {
             });
         } else {
             log::warn!("Runtime handle not available, falling back to tokio::spawn");
+            let ctx_clone = ctx.clone();
             tokio::spawn(async move {
                 let result = api_client
                     .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
@@ -338,10 +354,10 @@ impl TemplateApp {
                 
                 if let Ok(mut state) = async_state.lock() {
                     state.fetching_symbols.remove(&symbol);
-                    state.price_history_results.push((symbol, price_points));
+                    state.price_history_results.push((symbol.clone(), price_points));
                 }
                 
-                ctx.request_repaint();
+                ctx_clone.request_repaint();
             });
         }
     }
@@ -497,7 +513,22 @@ impl TemplateApp {
             ui.horizontal(|ui| {
                 let response = ui.selectable_label(is_selected, name);
                 if response.clicked() {
+                    let selection_changed = self.selected_portfolio.as_ref() != Some(name);
                     self.selected_portfolio = Some(name.clone());
+                    if selection_changed {
+                        // proactively queue fetches for this portfolio on click
+                        if let Some(portfolios) = &self.app_state.portfolios {
+                            if let Some(p) = portfolios.get(name) {
+                                if let Ok(mut q) = self.fetch_queue.try_lock() {
+                                    for sym in p.holdings.keys() {
+                                        if !q.contains(sym) {
+                                            q.push(sym.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -623,6 +654,21 @@ impl TemplateApp {
             portfolios.insert(portfolio.name.clone(), portfolio.clone());
             self.selected_portfolio = Some(portfolio.name);
         }
+
+        // Queue fetch for the new portfolio
+        if let Some(selected) = &self.selected_portfolio {
+            if let Some(portfolios) = &self.app_state.portfolios {
+                if let Some(p) = portfolios.get(selected) {
+                    if let Ok(mut q) = self.fetch_queue.try_lock() {
+                        for sym in p.holdings.keys() {
+                            if !q.contains(sym) {
+                                q.push(sym.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
     fn toggle_data_provider(&mut self) {
@@ -674,6 +720,29 @@ impl eframe::App for TemplateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle async results
         self.handle_async_results();
+
+        // If selected portfolio exists but no price history present and nothing is fetching,
+        // auto-queue all holdings once to populate charts.
+        if let (Some(selected), Some(portfolios)) = (self.selected_portfolio.clone(), &self.app_state.portfolios) {
+            if let Some(p) = portfolios.get(&selected) {
+                let has_any_history = p.price_history.as_ref().map(|m| !m.is_empty()).unwrap_or(false);
+                let fetching_any = self.async_state.try_lock().ok().map(|s| !s.fetching_symbols.is_empty()).unwrap_or(false);
+                if !has_any_history && !fetching_any {
+                    if let Ok(mut q) = self.fetch_queue.try_lock() {
+                        let mut added = false;
+                        for sym in p.holdings.keys() {
+                            if !q.contains(sym) {
+                                q.push(sym.clone());
+                                added = true;
+                            }
+                        }
+                        if added {
+                            log::info!("Auto-queued fetch for holdings of selected portfolio '{}'", selected);
+                        }
+                    }
+                }
+            }
+        }
 
         // Process any pending fetch queue items
         self.process_fetch_queue(ctx);

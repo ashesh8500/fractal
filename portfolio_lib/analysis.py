@@ -154,13 +154,21 @@ def discover_strategies() -> List[BaseStrategy]:
 def build_backtest_config(defaults: AnalysisDefaults) -> BacktestConfig:
     end = pd.Timestamp.today().normalize()
     start = end - pd.Timedelta(days=365 * defaults.years)
+    # BacktestConfig requires start_date and end_date as datetimes
+    sd = pd.Timestamp(start).to_pydatetime()
+    ed = pd.Timestamp(end).to_pydatetime()
+    if hasattr(sd, "tzinfo") and sd.tzinfo is not None:
+        # make tz-naive for consistency
+        sd = sd.replace(tzinfo=None)
+    if hasattr(ed, "tzinfo") and ed.tzinfo is not None:
+        ed = ed.replace(tzinfo=None)
     return BacktestConfig(
-        start_date=pd.Timestamp(start).to_pydatetime(),
-        end_date=end.to_pydatetime(),
-        initial_capital=defaults.initial_capital,
-        commission=defaults.commission,
-        slippage=defaults.slippage,
-        benchmark=defaults.benchmark,
+        start_date=sd,
+        end_date=ed,
+        initial_capital=float(defaults.initial_capital),
+        commission=float(defaults.commission),
+        slippage=float(defaults.slippage),
+        benchmark=str(defaults.benchmark),
     )
 
 
@@ -303,7 +311,16 @@ def print_metrics(title: str, res: Any) -> None:
 
 
 def normalized_series(values: List[float], timestamps: List[pd.Timestamp]) -> pd.Series:
-    s = pd.Series(values, index=pd.to_datetime(timestamps)).sort_index()
+    # Ensure we coerce to float ndarray to avoid pandas Scalar typing complaints
+    ts_idx = pd.to_datetime(timestamps)
+    # If any tz-aware, normalize to tz-naive
+    if isinstance(ts_idx, pd.DatetimeIndex) and ts_idx.tz is not None:
+        ts_idx = ts_idx.tz_localize(None)
+    # Guard against any complex dtype mistakenly introduced upstream
+    vals = np.asarray(values)
+    if np.iscomplexobj(vals):
+        vals = np.real(vals)
+    s = pd.Series(vals.astype(float), index=ts_idx).sort_index()
     if len(s) == 0 or not np.isfinite(s.iloc[0]) or s.iloc[0] == 0:
         raise RuntimeError("Invalid portfolio values for plotting.")
     return s / s.iloc[0]
@@ -376,8 +393,59 @@ def determine_common_period(
     return common_start, common_end
 
 
+def compute_baseline_series(
+    price_history: Dict[str, pd.DataFrame],
+    bt_cfg: BacktestConfig,
+    universe_symbols: List[str],
+) -> Optional[pd.Series]:
+    """
+    Compute a buy-and-hold baseline using equal weights on the initial date across the provided universe.
+    This ignores rebalancing and keeps initial weights unchanged over the backtest period.
+    """
+    if not universe_symbols:
+        return None
+    # Determine common start bounded by bt_cfg
+    start_bound = pd.Timestamp(bt_cfg.start_date).tz_localize(None)
+    end_bound = pd.Timestamp(bt_cfg.end_date).tz_localize(None)
+
+    # Build normalized price series for each symbol starting at its first price ON/AFTER start_bound.
+    norm_series: List[pd.Series] = []
+    valid_syms: List[str] = []
+    for sym in universe_symbols:
+        df = price_history.get(sym)
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        s = df["close"]
+        if isinstance(s.index, pd.DatetimeIndex) and s.index.tz is not None:
+            s = s.tz_localize(None)
+        # Restrict to bounds
+        s = s[(s.index >= start_bound) & (s.index <= end_bound)]
+        if s.shape[0] < 2:
+            continue
+        s = s / s.iloc[0]
+        s.name = sym
+        norm_series.append(s)
+        valid_syms.append(sym)
+
+    if len(norm_series) < 2:
+        return None
+
+    # Align by inner join on dates so we use the common intersection for initial weights.
+    df_norm = pd.concat(norm_series, axis=1, join="inner").sort_index()
+    if df_norm.shape[0] < 2:
+        return None
+
+    # Equal weights across valid symbols at t0; hold constant thereafter.
+    w = np.full(df_norm.shape[1], 1.0 / df_norm.shape[1])
+    baseline = (df_norm.values @ w)
+    baseline_s = pd.Series(baseline, index=df_norm.index, name="Baseline (Buy & Hold)")
+    # Normalize to 1 at start (should already be near 1 but guard due to numeric)
+    baseline_s = baseline_s / float(baseline_s.iloc[0])
+    return baseline_s
+
+
 def plot_results(
-    results: Dict[str, Any], benchmark_series: Optional[pd.Series]
+    results: Dict[str, Any], benchmark_series: Optional[pd.Series], baseline_series: Optional[pd.Series] = None
 ) -> None:
     # Determine a common period to normalize across all strategies
     common_start, common_end = determine_common_period(results)
@@ -396,6 +464,7 @@ def plot_results(
 
     # Prepare benchmark aligned to common period
     bench_plot = None
+    baseline_plot = None
     if benchmark_series is not None and (common_start is not None and common_end is not None):
         bench = benchmark_series[
             (benchmark_series.index >= common_start)
@@ -409,6 +478,21 @@ def plot_results(
                 else bench.index
             )
             bench_plot = bench.reindex(union_index, method="pad")
+
+    # Prepare baseline aligned to common period
+    if baseline_series is not None and (common_start is not None and common_end is not None):
+        base = baseline_series[
+            (baseline_series.index >= common_start)
+            & (baseline_series.index <= common_end)
+        ]
+        if len(base) > 1:
+            base = base / base.iloc[0]
+            union_index = (
+                union_index.union(base.index).sort_values()
+                if union_index is not None
+                else base.index
+            )
+            baseline_plot = base.reindex(union_index, method="pad")
 
     # Use Plotly for interactive visualization
     fig = go.Figure()
@@ -447,12 +531,30 @@ def plot_results(
             )
         )
 
+    # Plot baseline (buy & hold initial weights)
+    if baseline_plot is not None and len(baseline_plot) > 1:
+        cum_base = float(baseline_plot.iloc[-1]) - 1.0
+        base_name = baseline_plot.name or "Baseline (Buy & Hold)"
+        fig.add_trace(
+            go.Scatter(
+                x=baseline_plot.index,
+                y=baseline_plot.values,
+                mode="lines",
+                name=f"{base_name} (Cum: {cum_base:.2%})",
+                line=dict(color="#2ca02c", dash="dot"),
+                hovertemplate="%{x|%Y-%m-%d}<br>%{y:.3f}<extra>" + base_name + "</extra>",
+            )
+        )
+
     # Drawdown shading using first strategy
     if norm_curves and union_index is not None:
         first_name = next(iter(norm_curves.keys()))
         ref = norm_curves[first_name].reindex(union_index, method="pad")
         running_max = ref.cummax()
-        dd = np.clip(running_max.values - ref.values, 0, None)
+        # Work on numpy arrays to avoid pandas ExtensionArray typing issues
+        ref_vals = np.asarray(ref.values, dtype=float)
+        run_vals = np.asarray(running_max.values, dtype=float)
+        dd = np.clip(run_vals - ref_vals, 0.0, None)
         fig.add_trace(
             go.Scatter(
                 x=ref.index,
@@ -484,7 +586,7 @@ def plot_results(
         period_str = ""
 
     fig.update_layout(
-        title=f"Strategy Comparison vs Benchmark (Common-normalized) {period_str}",
+        title=f"Strategy Comparison vs Benchmark & Baseline (Common-normalized) {period_str}",
         xaxis_title="Date",
         yaxis_title="Growth of $1",
         template="plotly_white",
@@ -704,10 +806,10 @@ def plot_allocation_stack(
 
     # Plotly stacked area chart
     fig = go.Figure()
-    cum = np.zeros(len(dfp))
+    cum = np.zeros(len(dfp), dtype=float)
     xvals = dfp.index
     for col in dfp.columns:
-        y = dfp[col].values
+        y = np.asarray(dfp[col].values, dtype=float)
         fig.add_trace(
             go.Scatter(
                 x=xvals,
@@ -1054,16 +1156,26 @@ def main():
         # Name for legend context
         bench_series.name = bt_cfg.benchmark
 
+    # Baseline (buy & hold initial weights across universe)
+    baseline_series = compute_baseline_series(
+        price_history=price_history,
+        bt_cfg=bt_cfg,
+        universe_symbols=defaults.symbols,
+    )
+    if baseline_series is not None and baseline_series.name is None:
+        baseline_series.name = "Baseline (Buy & Hold)"
+
     # Plot equity curves with common normalization period
-    plot_results(results, bench_series)
+    plot_results(results, bench_series, baseline_series)
 
     # Allocation charts per strategy
     if defaults.plot_allocations:
         for name, res in results.items():
             alloc_df = extract_allocations(res)
-            plot_allocation_stack(
-                alloc_df, title=name, max_cols=defaults.allocation_max_cols
-            )
+            if alloc_df is not None:
+                plot_allocation_stack(
+                    alloc_df, title=name, max_cols=defaults.allocation_max_cols
+                )
 
     # Trade markers per strategy (if executed_trades available)
     for name, res in results.items():
