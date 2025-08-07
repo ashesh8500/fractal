@@ -1,8 +1,8 @@
-use egui::{self, Color32, Ui};
-use egui_plot::{BoxElem, BoxPlot, BoxSpread, Legend, Plot};
 use crate::components::{ComponentCategory, PortfolioComponent};
 use crate::portfolio::{Portfolio, PricePoint};
 use crate::state::Config;
+use egui::{self, Color32, Ui};
+use egui_plot::{BoxElem, BoxPlot, BoxSpread, Legend, Plot};
 
 /// CandlesComponent implemented using BoxPlot, following egui demo patterns.
 /// Each candle is represented as a BoxElem (min/low, quartiles via open/close, max/high).
@@ -45,7 +45,7 @@ impl PortfolioComponent for CandlesComponent {
         if self.selected_symbol.is_none() && !symbols.is_empty() {
             self.selected_symbol = Some(symbols[0].clone());
         }
-        
+
         ui.horizontal(|ui| {
             ui.label("Symbol:");
             let combo_id = base_id.with(("candles", "symbol_combo"));
@@ -102,6 +102,12 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
         return;
     }
 
+    // Theme-aware stroke and semi-transparent fills for good contrast on light/dark
+    let visuals = ui.visuals().clone();
+    let stroke_color = visuals.widgets.noninteractive.fg_stroke.color;
+    let up_fill = Color32::from_rgba_premultiplied(0, 180, 0, 180);
+    let down_fill = Color32::from_rgba_premultiplied(200, 40, 40, 180);
+
     // Limit bars for performance (demo pattern)
     let max_points = 300;
     let slice = if data.len() > max_points {
@@ -133,12 +139,8 @@ fn render_boxplot_candles(ui: &mut Ui, symbol: &str, data: &[PricePoint], base_i
 
         // Color depending on up/down day
         let up = p.close >= p.open;
-        let fill = if up {
-            Color32::from_rgb(0, 180, 0)
-        } else {
-            Color32::from_rgb(200, 40, 40)
-        };
-        be = be.fill(fill).stroke(egui::Stroke::new(1.0, Color32::WHITE));
+        let fill = if up { up_fill } else { down_fill };
+        be = be.fill(fill).stroke(egui::Stroke::new(1.0, stroke_color));
 
         boxes.push(be);
     }

@@ -26,7 +26,7 @@ impl TablesComponent {
 
 impl PortfolioComponent for TablesComponent {
     fn render(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, config: &Config) {
-        let base_id = ui.id().with("component::tables::content");
+        let _base_id = ui.id().with("component::tables::content");
         ui.heading("Data Tables");
 
         // Provider status header
@@ -172,10 +172,7 @@ impl PortfolioComponent for TablesComponent {
                             ui.strong("Volatility");
                         });
                         row.col(|ui| {
-                            ui.label(format!(
-                                "{:.2}%",
-                                portfolio.risk_metrics.volatility * 100.0
-                            ));
+                            ui.label(format!("{:.2}%", portfolio.risk_metrics.volatility * 100.0));
                         });
                     });
                     body.row(row_height, |mut row| {
@@ -202,10 +199,7 @@ impl PortfolioComponent for TablesComponent {
                             ui.strong("VaR (95%)");
                         });
                         row.col(|ui| {
-                            ui.label(format!(
-                                "{:.2}%",
-                                portfolio.risk_metrics.var_95 * 100.0
-                            ));
+                            ui.label(format!("{:.2}%", portfolio.risk_metrics.var_95 * 100.0));
                         });
                     });
 
@@ -247,10 +241,7 @@ impl PortfolioComponent for TablesComponent {
                             ui.strong("Beta");
                         });
                         row.col(|ui| {
-                            ui.label(format!(
-                                "{:.2}",
-                                portfolio.performance_metrics.beta
-                            ));
+                            ui.label(format!("{:.2}", portfolio.performance_metrics.beta));
                         });
                     });
                 });

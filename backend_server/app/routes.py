@@ -3,16 +3,22 @@ FastAPI routes with functional error handling using Result monad.
 Clean, composable API design.
 """
 
-from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta, UTC as DATETIME_UTC
+from datetime import UTC as DATETIME_UTC
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
+from fastapi import APIRouter, HTTPException, Query
+
+from .core.result import ErrorType
 from .schemas import (
-    PortfolioCreate, PortfolioResponse, StrategyExecuteRequest, 
-    BacktestRequest, MarketDataRequest, DataProvider, ErrorResponse
+    BacktestRequest,
+    DataProvider,
+    MarketDataRequest,
+    PortfolioCreate,
+    PortfolioResponse,
+    StrategyExecuteRequest,
 )
 from .services import portfolio_service
-from .core.result import Result, AppError, ErrorType
 
 # In accordance with the Architecture Plan, the backend is a thin orchestration
 # layer over the portfolio_lib. For historical prices, we expose a dedicated
@@ -25,7 +31,9 @@ except Exception:
 
 # Fallback data service if DI is unavailable: yfinance (from portfolio_lib)
 try:
-    from portfolio_lib.portfolio_lib.services.data.yfinance import YFinanceDataService  # type: ignore
+    from portfolio_lib.portfolio_lib.services.data.yfinance import (
+        YFinanceDataService,  # type: ignore
+    )
 except Exception:
     YFinanceDataService = None  # type: ignore
 
@@ -39,8 +47,11 @@ class LocalYFinanceFallback:
             raise RuntimeError(f"yfinance not installed: {exc}")
         self.yf = yf
 
-    def fetch_price_history(self, symbols: List[str], start_date: str, end_date: str) -> Dict[str, Any]:
+    def fetch_price_history(
+        self, symbols: List[str], start_date: str, end_date: str
+    ) -> Dict[str, Any]:
         import pandas as pd  # type: ignore
+
         out: Dict[str, Any] = {}
         start = start_date
         end = end_date
@@ -48,7 +59,14 @@ class LocalYFinanceFallback:
         # yfinance can fetch multiple symbols; however, handle one-by-one for simpler normalization
         for sym in symbols:
             try:
-                df = self.yf.download(sym, start=start, end=end, progress=False, auto_adjust=False, group_by="column")
+                df = self.yf.download(
+                    sym,
+                    start=start,
+                    end=end,
+                    progress=False,
+                    auto_adjust=False,
+                    group_by="column",
+                )
                 # Ensure DataFrame
                 if isinstance(df, pd.DataFrame) and not df.empty:
                     out[sym] = df
@@ -62,6 +80,7 @@ class LocalYFinanceFallback:
     def _empty_df():
         try:
             import pandas as pd  # type: ignore
+
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
         except Exception:
             return []  # last resort
@@ -74,7 +93,11 @@ class LocalYFinanceFallback:
                 info = t.fast_info if hasattr(t, "fast_info") else {}
                 price = None
                 if info:
-                    price = info.get("last_price") or info.get("last_trade") or info.get("regular_market_price")
+                    price = (
+                        info.get("last_price")
+                        or info.get("last_trade")
+                        or info.get("regular_market_price")
+                    )
                 if price is None:
                     hist = t.history(period="1d")
                     if not hist.empty:
@@ -97,24 +120,23 @@ def handle_result(result, success_status: int = 200):
     """Convert Result monad to FastAPI response."""
     if result.is_ok():
         return result.unwrap()
-    
+
     error = result.unwrap_err()
     status_map = {
         ErrorType.VALIDATION_ERROR: 400,
         ErrorType.NOT_FOUND: 404,
         ErrorType.DATA_SERVICE_ERROR: 503,
         ErrorType.STRATEGY_ERROR: 400,
-        ErrorType.INTERNAL_ERROR: 500
+        ErrorType.INTERNAL_ERROR: 500,
     }
-    
+
     status_code = status_map.get(error.error_type, 500)
     raise HTTPException(status_code=status_code, detail=error.to_dict())
 
 
 @api_router.post("/portfolios", response_model=PortfolioResponse, status_code=201)
 async def create_portfolio(
-    portfolio: PortfolioCreate,
-    provider: DataProvider = DataProvider.YFINANCE
+    portfolio: PortfolioCreate, provider: DataProvider = DataProvider.YFINANCE
 ):
     """Create a new portfolio."""
     result = portfolio_service.create_portfolio(portfolio, provider)
@@ -136,20 +158,14 @@ async def get_portfolio(portfolio_name: str):
 
 
 @api_router.post("/portfolios/{portfolio_name}/strategies/execute")
-async def execute_strategy(
-    portfolio_name: str,
-    request: StrategyExecuteRequest
-):
+async def execute_strategy(portfolio_name: str, request: StrategyExecuteRequest):
     """Execute a trading strategy on a portfolio."""
     result = portfolio_service.execute_strategy(portfolio_name, request)
     return handle_result(result)
 
 
 @api_router.post("/portfolios/{portfolio_name}/backtests")
-async def run_backtest(
-    portfolio_name: str,
-    request: BacktestRequest
-):
+async def run_backtest(portfolio_name: str, request: BacktestRequest):
     """Run a backtest on a portfolio."""
     result = portfolio_service.run_backtest(portfolio_name, request)
     return handle_result(result)
@@ -158,14 +174,14 @@ async def run_backtest(
 @api_router.get("/market-data")
 async def get_market_data(
     symbols: str = Query(..., description="Comma-separated list of symbols"),
-    provider: DataProvider = DataProvider.YFINANCE
+    provider: DataProvider = DataProvider.YFINANCE,
 ):
     """Get current market data for symbols."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    
+
     if not symbol_list:
         raise HTTPException(status_code=400, detail="At least one symbol required")
-    
+
     request = MarketDataRequest(symbols=symbol_list, provider=provider)
     result = portfolio_service.get_market_data(request)
     return handle_result(result)
@@ -177,7 +193,9 @@ def _parse_date_param(label: str, v: Optional[str]) -> Optional[datetime]:
     try:
         return datetime.strptime(v, "%Y-%m-%d").replace(tzinfo=DATETIME_UTC)
     except Exception:
-        raise HTTPException(status_code=400, detail=f"Invalid {label} format (expected YYYY-MM-DD): {v}")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid {label} format (expected YYYY-MM-DD): {v}"
+        )
 
 
 def _to_float(val: Any) -> Optional[float]:
@@ -194,6 +212,7 @@ def _to_float(val: Any) -> Optional[float]:
         # pandas NA or numpy types handling
         try:
             import math
+
             if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
                 return None
         except Exception:
@@ -228,8 +247,12 @@ async def get_market_data_history(
     # Accept multiple aliases for compatibility
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    start_date: Optional[str] = Query(None, description="Alias for start date (YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="Alias for end date (YYYY-MM-DD)"),
+    start_date: Optional[str] = Query(
+        None, description="Alias for start date (YYYY-MM-DD)"
+    ),
+    end_date: Optional[str] = Query(
+        None, description="Alias for end date (YYYY-MM-DD)"
+    ),
     provider: DataProvider = DataProvider.YFINANCE,
 ):
     """
@@ -261,7 +284,9 @@ async def get_market_data_history(
     ds = None
     if get_data_service is not None:
         try:
-            prov_name: str = provider.value if hasattr(provider, "value") else str(provider)
+            prov_name: str = (
+                provider.value if hasattr(provider, "value") else str(provider)
+            )
             ds = get_data_service(prov_name)
         except Exception:
             ds = None
@@ -276,13 +301,17 @@ async def get_market_data_history(
         try:
             ds = LocalYFinanceFallback()
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Data service configuration unavailable: {exc}")
+            raise HTTPException(
+                status_code=500, detail=f"Data service configuration unavailable: {exc}"
+            )
 
     # Fetch price history from provider; library contract: fetch_price_history(symbols, start, end)
     try:
         raw_history = ds.fetch_price_history(symbol_list, start_iso, end_iso)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Failed to fetch price history: {exc}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch price history: {exc}"
+        )
 
     # Normalize to PricePoint list per symbol, independent of provider's internal format.
     out: Dict[str, List[Dict[str, Any]]] = {}
@@ -290,6 +319,7 @@ async def get_market_data_history(
     # Lazy import pandas to support DataFrame normalization if available
     try:
         import pandas as pd  # type: ignore
+
         has_pandas = True
     except Exception:
         pd = None  # type: ignore
@@ -343,7 +373,10 @@ async def get_market_data_history(
             # If still MultiIndex, flatten
             if isinstance(df.columns, pd.MultiIndex):
                 df = df.copy()
-                df.columns = ["_".join([str(p) for p in tup if p is not None]) for tup in df.columns.to_list()]
+                df.columns = [
+                    "_".join([str(p) for p in tup if p is not None])
+                    for tup in df.columns.to_list()
+                ]
 
             # Build lowercase map
             cols_lower = {str(c).lower(): str(c) for c in df.columns}
@@ -363,7 +396,9 @@ async def get_market_data_history(
             c_open = col("open", "o", "1. open")
             c_high = col("high", "h", "2. high")
             c_low = col("low", "l", "3. low")
-            c_close = col("close", "c", "4. close", "adj close", "adj_close", "adjusted close")
+            c_close = col(
+                "close", "c", "4. close", "adj close", "adj_close", "adjusted close"
+            )
             if c_close is None:
                 for alt in ["adj close", "adj_close", "adjusted close", "close"]:
                     alt_col = col(alt)
@@ -388,14 +423,16 @@ async def get_market_data_history(
                 if None in (o, h, l, c):
                     continue
 
-                rows.append({
-                    "timestamp": ts,
-                    "open": o,
-                    "high": h,
-                    "low": l,
-                    "close": c,
-                    "volume": v,
-                })
+                rows.append(
+                    {
+                        "timestamp": ts,
+                        "open": o,
+                        "high": h,
+                        "low": l,
+                        "close": c,
+                        "volume": v,
+                    }
+                )
 
             rows.sort(key=lambda x: x["timestamp"])
         except Exception:
@@ -447,7 +484,9 @@ async def get_market_data_history(
                             "open": _to_float(row.get("open") or row.get("o")),
                             "high": _to_float(row.get("high") or row.get("h")),
                             "low": _to_float(row.get("low") or row.get("l")),
-                            "close": _to_float(row.get("close") or row.get("c") or row.get("adj_close")),
+                            "close": _to_float(
+                                row.get("close") or row.get("c") or row.get("adj_close")
+                            ),
                             "volume": _to_int(row.get("volume") or row.get("v")),
                         }
                         if item["close"] is None:
@@ -472,7 +511,9 @@ async def get_market_data_history(
                             "open": _to_float(row.get("open") or row.get("o")),
                             "high": _to_float(row.get("high") or row.get("h")),
                             "low": _to_float(row.get("low") or row.get("l")),
-                            "close": _to_float(row.get("close") or row.get("c") or row.get("adj_close")),
+                            "close": _to_float(
+                                row.get("close") or row.get("c") or row.get("adj_close")
+                            ),
                             "volume": _to_int(row.get("volume") or row.get("v")),
                         }
                         if item["close"] is None:

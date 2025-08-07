@@ -1,10 +1,12 @@
- //! API client for communicating with the portfolio backend
- //! and/or directly with external data providers (native mode).
+//! API client for communicating with the portfolio backend
+//! and/or directly with external data providers (native mode).
 
 use crate::portfolio::{Portfolio, PricePoint};
+use rand::{Rng, thread_rng};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -32,7 +34,7 @@ impl ApiClient {
         self.alphavantage_api_key = alphavantage_api_key;
         self
     }
-    
+
     /// Test backend health (noop in native mode)
     pub async fn test_health(&self) -> Result<(), ApiError> {
         if self.use_native_provider {
@@ -49,13 +51,12 @@ impl ApiClient {
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "Health check failed: status={}, body={}",
-                    status,
-                    text
+                    status, text
                 )))
             }
         }
     }
-    
+
     /// Get all portfolios from the backend (native mode returns empty list placeholder)
     pub async fn get_portfolios(&self) -> Result<Vec<Portfolio>, ApiError> {
         if self.use_native_provider {
@@ -63,7 +64,7 @@ impl ApiClient {
         } else {
             let url = format!("{}/portfolios", self.base_url);
             let response = self.client.get(&url).send().await?;
-            
+
             if response.status().is_success() {
                 let portfolios: Vec<Portfolio> = response.json().await?;
                 Ok(portfolios)
@@ -72,13 +73,12 @@ impl ApiClient {
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "get_portfolios failed: status={}, body={}",
-                    status,
-                    text
+                    status, text
                 )))
             }
         }
     }
-    
+
     /// Get a specific portfolio
     pub async fn get_portfolio(&self, name: &str) -> Result<Portfolio, ApiError> {
         if self.use_native_provider {
@@ -88,7 +88,7 @@ impl ApiClient {
         } else {
             let url = format!("{}/portfolios/{}", self.base_url, urlencoding::encode(name));
             let response = self.client.get(&url).send().await?;
-            
+
             if response.status().is_success() {
                 let portfolio: Portfolio = response.json().await?;
                 Ok(portfolio)
@@ -97,15 +97,18 @@ impl ApiClient {
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "get_portfolio failed: status={}, body={}",
-                    status,
-                    text
+                    status, text
                 )))
             }
         }
     }
-    
+
     /// Create a new portfolio
-    pub async fn create_portfolio(&self, name: &str, holdings: HashMap<String, f64>) -> Result<Portfolio, ApiError> {
+    pub async fn create_portfolio(
+        &self,
+        name: &str,
+        holdings: HashMap<String, f64>,
+    ) -> Result<Portfolio, ApiError> {
         if self.use_native_provider {
             // Create a minimal local portfolio
             let mut p = Portfolio::new(name.to_string());
@@ -118,12 +121,9 @@ impl ApiClient {
                 "name": name,
                 "holdings": holdings
             });
-            
-            let response = self.client.post(&url)
-                .json(&payload)
-                .send()
-                .await?;
-            
+
+            let response = self.client.post(&url).json(&payload).send().await?;
+
             if response.status().is_success() {
                 let portfolio: Portfolio = response.json().await?;
                 Ok(portfolio)
@@ -132,37 +132,56 @@ impl ApiClient {
                 let text = response.text().await.unwrap_or_default();
                 Err(ApiError::Backend(format!(
                     "create_portfolio failed: status={}, body={}",
-                    status,
-                    text
+                    status, text
                 )))
             }
         }
     }
-    
+
     /// Get current market data
-    pub async fn get_market_data(&self, symbols: &[String]) -> Result<HashMap<String, f64>, ApiError> {
+    pub async fn get_market_data(
+        &self,
+        symbols: &[String],
+    ) -> Result<HashMap<String, f64>, ApiError> {
         if self.use_native_provider {
-            self.alpha_vantage_current_prices(symbols).await
+            // Retry wrapper to mitigate rate limits
+            self.with_retries(|| {
+                let this = self.clone();
+                let syms: Vec<String> = symbols.to_vec();
+                async move { this.alpha_vantage_current_prices(&syms).await }
+            })
+            .await
         } else {
             let symbols_str = symbols.join(",");
-            let url = format!("{}/market-data?symbols={}", self.base_url, urlencoding::encode(&symbols_str));
-            let response = self.client.get(&url).send().await?;
-            
-            if response.status().is_success() {
-                let data: HashMap<String, f64> = response.json().await?;
-                Ok(data)
-            } else {
-                let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                Err(ApiError::Backend(format!(
-                    "get_market_data failed: status={}, body={}",
-                    status,
-                    text
-                )))
-            }
+            let url = format!(
+                "{}/market-data?symbols={}",
+                self.base_url,
+                urlencoding::encode(&symbols_str)
+            );
+            // Retry backend call as well (e.g., transient 5xx)
+            self.with_retries(|| {
+                let this = self.clone();
+                let url_owned = url.clone();
+                async move {
+                    let response = this.client.get(&url_owned).send().await?;
+
+                    if response.status().is_success() {
+                        let data: HashMap<String, f64> = response.json().await?;
+                        Ok(data)
+                    } else {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        Err(ApiError::Backend(format!(
+                            "get_market_data failed: status={}, body={}",
+                            status, text
+                        )))
+                    }
+                }
+            })
+            .await
         }
     }
-    
+
     /// Get historic price data for symbols from backend or native provider
     pub async fn get_historic_prices(
         &self,
@@ -171,7 +190,15 @@ impl ApiClient {
         end_date: &str,
     ) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
         if self.use_native_provider {
-            self.alpha_vantage_price_history(symbols, start_date, end_date).await
+            // Retry wrapper to mitigate Alpha Vantage rate limits
+            self.with_retries(|| {
+                let this = self.clone();
+                let syms: Vec<String> = symbols.to_vec();
+                let sd = start_date.to_string();
+                let ed = end_date.to_string();
+                async move { this.alpha_vantage_price_history(&syms, &sd, &ed).await }
+            })
+            .await
         } else {
             // Only call the history endpoint; do NOT fall back to /market-data (current-only).
             // Try both start/end variants for compatibility.
@@ -193,34 +220,56 @@ impl ApiClient {
                 ),
             ];
 
-            let mut last_err: Option<ApiError> = None;
-            for url in attempts {
-                match self.fetch_and_parse_history(&url).await {
-                    Ok(map) => return Ok(map),
-                    Err(e) => {
-                        last_err = Some(e);
-                        continue;
+            // Retry across attempts; if any URL succeeds, return the map.
+            self.with_retries(|| {
+                let this = self.clone();
+                let attempts_owned = attempts.clone();
+                let fallback_key = this.alphavantage_api_key.clone();
+                let syms: Vec<String> = symbols.to_vec();
+                let sd = start_date.to_string();
+                let ed = end_date.to_string();
+                async move {
+                    let mut last_err: Option<ApiError> = None;
+                    for url in &attempts_owned {
+                        match this.fetch_and_parse_history(url).await {
+                            Ok(map) => return Ok(map),
+                            Err(e) => {
+                                last_err = Some(e);
+                                continue;
+                            }
+                        }
                     }
+
+                    // If the backend cannot provide history, optionally fall back to native if key present.
+                    if fallback_key.is_some() {
+                        log::warn!("Backend history endpoint failed. Falling back to Alpha Vantage for history.");
+                        return this.alpha_vantage_price_history(&syms, &sd, &ed).await;
+                    }
+
+                    Err(last_err.unwrap_or_else(|| {
+                        ApiError::Backend("All history endpoint attempts failed (no fallback native provider configured)".into())
+                    }))
                 }
-            }
-
-            // If the backend cannot provide history, optionally fall back to native if key present.
-            if self.alphavantage_api_key.is_some() {
-                log::warn!("Backend history endpoint failed. Falling back to Alpha Vantage for history.");
-                return self.alpha_vantage_price_history(symbols, start_date, end_date).await;
-            }
-
-            Err(last_err.unwrap_or_else(|| {
-                ApiError::Backend("All history endpoint attempts failed (no fallback native provider configured)".into())
-            }))
+            })
+            .await
         }
     }
 
-    async fn fetch_and_parse_history(&self, url: &str) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
+    async fn fetch_and_parse_history(
+        &self,
+        url: &str,
+    ) -> Result<HashMap<String, Vec<PricePoint>>, ApiError> {
         let response = self.client.get(url).send().await?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
+            if status.as_u16() == 429 || text.contains("rate limit") || text.contains("Rate limit")
+            {
+                return Err(ApiError::RateLimited(format!(
+                    "history request rate-limited: url={}, status={}, body={}",
+                    url, status, text
+                )));
+            }
             return Err(ApiError::Backend(format!(
                 "history request failed: url={}, status={}, body={}",
                 url, status, text
@@ -233,13 +282,15 @@ impl ApiClient {
         // 3) [ { "symbol": "AAPL", "prices": [ {...} ] }, ... ]
         // 4) { "market_data": [ {"symbol": "AAPL", "timestamp": "...", "open":...}, ... ] }  -> flattened
         let v: Value = response.json().await?;
-        parse_history_value(v).map_err(|e| {
-            ApiError::Parsing(format!("Failed parsing history from {}: {}", url, e))
-        })
+        parse_history_value(v)
+            .map_err(|e| ApiError::Parsing(format!("Failed parsing history from {}: {}", url, e)))
     }
 
     // ------------ Native provider (Alpha Vantage) ------------
-    async fn alpha_vantage_current_prices(&self, symbols: &[String]) -> Result<HashMap<String, f64>, ApiError> {
+    async fn alpha_vantage_current_prices(
+        &self,
+        symbols: &[String],
+    ) -> Result<HashMap<String, f64>, ApiError> {
         let key = self
             .alphavantage_api_key
             .as_ref()
@@ -257,6 +308,10 @@ impl ApiClient {
             );
             let resp = self.client.get(&url).send().await?;
             if !resp.status().is_success() {
+                // Attempt to parse rate-limit style error messages for better classification
+                if resp.status().as_u16() == 429 {
+                    return Err(ApiError::RateLimited("HTTP 429 from Alpha Vantage".into()));
+                }
                 return Err(ApiError::Backend(format!(
                     "Alpha Vantage price request failed: {}",
                     resp.status()
@@ -269,7 +324,9 @@ impl ApiClient {
                 .and_then(|g| g.get("05. price"))
                 .and_then(|p| p.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
-                .ok_or_else(|| ApiError::Parsing("Missing price in Alpha Vantage response".into()))?;
+                .ok_or_else(|| {
+                    ApiError::Parsing("Missing price in Alpha Vantage response".into())
+                })?;
             out.insert(symbol.clone(), price);
         }
         Ok(out)
@@ -296,15 +353,22 @@ impl ApiClient {
             );
             let resp = self.client.get(&url).send().await?;
             if !resp.status().is_success() {
+                if resp.status().as_u16() == 429 {
+                    return Err(ApiError::RateLimited("HTTP 429 from Alpha Vantage".into()));
+                }
                 return Err(ApiError::Backend(format!(
                     "Alpha Vantage history request failed: {}",
                     resp.status()
                 )));
             }
             let v: Value = resp.json().await?;
-            
+
             // Log the full response for debugging
-            log::debug!("Alpha Vantage response for {}: {}", symbol, serde_json::to_string_pretty(&v).unwrap_or_default());
+            log::debug!(
+                "Alpha Vantage response for {}: {}",
+                symbol,
+                serde_json::to_string_pretty(&v).unwrap_or_default()
+            );
 
             // Response has "Time Series (Daily)": { "YYYY-MM-DD": { "1. open": "...", ... }, ... }
             let Some(ts) = v.get("Time Series (Daily)") else {
@@ -315,21 +379,25 @@ impl ApiClient {
                 }
                 if let Some(error) = v.get("Error Message").and_then(|e| e.as_str()) {
                     log::error!("Alpha Vantage error: {}", error);
-                    return Err(ApiError::Parsing(format!("Alpha Vantage API error: {}", error)));
+                    return Err(ApiError::Parsing(format!(
+                        "Alpha Vantage API error: {}",
+                        error
+                    )));
                 }
                 if let Some(info) = v.get("Information").and_then(|i| i.as_str()) {
                     log::warn!("Alpha Vantage info message: {}", info);
                     return Err(ApiError::RateLimited(info.into()));
                 }
-                
+
                 // Log the full response structure to help debug
-                let available_keys: Vec<String> = v.as_object()
+                let available_keys: Vec<String> = v
+                    .as_object()
                     .map(|obj| obj.keys().cloned().collect())
                     .unwrap_or_default();
-                    
+
                 return Err(ApiError::Parsing(format!(
-                    "Missing time series in Alpha Vantage response for {}. Available keys: {:?}. Response: {}", 
-                    symbol, 
+                    "Missing time series in Alpha Vantage response for {}. Available keys: {:?}. Response: {}",
+                    symbol,
                     available_keys,
                     serde_json::to_string(&v).unwrap_or_default()
                 )));
@@ -339,13 +407,18 @@ impl ApiClient {
             if let Some(map) = ts.as_object() {
                 for (date_str, fields) in map {
                     // Parse date as UTC midnight
-                    let date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-                        .map_err(|e| ApiError::Parsing(format!("Invalid date: {} - {}", date_str, e)))?;
+                    let date =
+                        chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").map_err(|e| {
+                            ApiError::Parsing(format!("Invalid date: {} - {}", date_str, e))
+                        })?;
                     let naive_dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| {
                         ApiError::Parsing(format!("Invalid time for date {}", date_str))
                     })?;
                     // Use from_naive_utc_and_offset to avoid deprecated from_utc
-                    let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc);
+                    let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                        naive_dt,
+                        chrono::Utc,
+                    );
 
                     let open = get_num(fields, "1. open")?;
                     let high = get_num(fields, "2. high")?;
@@ -370,6 +443,56 @@ impl ApiClient {
         }
 
         Ok(result)
+    }
+}
+
+impl ApiClient {
+    // Generic retry helper with exponential backoff and jitter.
+    // Retries on: ApiError::RateLimited and ApiError::Network.
+    async fn with_retries<T, F, Fut>(&self, mut op_factory: F) -> Result<T, ApiError>
+    where
+        F: FnMut() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<T, ApiError>> + Send,
+        T: Send,
+    {
+        let max_retries = 4usize;
+        let base_delay = Duration::from_millis(500);
+        let mut attempt = 0usize;
+
+        loop {
+            let fut = op_factory();
+            match fut.await {
+                Ok(v) => return Ok(v),
+                Err(err) => {
+                    let should_retry =
+                        matches!(err, ApiError::RateLimited(_) | ApiError::Network(_));
+                    if !should_retry || attempt >= max_retries {
+                        return Err(err);
+                    }
+
+                    // Exponential backoff with jitter
+                    let exp = 1u32 << attempt; // 1, 2, 4, 8
+                    // Compute jitter without holding a non-Send RNG across an await.
+                    let now_nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    let jitter_ms: u64 = (now_nanos % 251);
+                    let delay = base_delay.saturating_mul(exp) + Duration::from_millis(jitter_ms);
+
+                    log::warn!(
+                        "Retrying after error (attempt {} of {}): {}. Sleeping {:?}",
+                        attempt + 1,
+                        max_retries,
+                        err,
+                        delay
+                    );
+
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+            }
+        }
     }
 }
 
@@ -447,7 +570,8 @@ fn parse_history_value(v: Value) -> Result<HashMap<String, Vec<PricePoint>>, Str
 
 fn parse_price_point(item: &Value) -> Option<PricePoint> {
     // Accept different field names for timestamp
-    let ts = item.get("timestamp")
+    let ts = item
+        .get("timestamp")
         .or_else(|| item.get("time"))
         .or_else(|| item.get("date"))?;
 

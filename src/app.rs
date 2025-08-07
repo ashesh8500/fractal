@@ -56,14 +56,21 @@ pub struct TemplateApp {
     // Show last error briefly in the side panel
     #[serde(skip)]
     last_error_message: Option<String>,
-    
+
     // Portfolio marked for deletion (handled in update loop)
     #[serde(skip)]
     portfolio_to_delete: Option<String>,
-    
+
     // Tokio runtime handle for background async operations
     #[serde(skip)]
     rt_handle: Option<tokio::runtime::Handle>,
+
+    // New: control automatic reloading that can trigger rate limits in native mode
+    constant_reload: bool,
+
+    // New: tracks a one-shot manual backend load intent
+    #[serde(skip)]
+    backend_manual_load_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +115,10 @@ impl Default for TemplateApp {
             last_selected_portfolio: None,
             last_error_message: None,
             portfolio_to_delete: None,
-            rt_handle: None,  // Will be set properly in new()
+            rt_handle: None, // Will be set properly in new()
+            // New defaults:
+            constant_reload: true,
+            backend_manual_load_pending: false,
         }
     }
 }
@@ -133,20 +143,20 @@ impl TemplateApp {
         // Initialize non-serializable components
         let use_native = app.app_state.config.use_native_provider;
         let key = app.app_state.config.alphavantage_api_key.clone();
-        app.api_client = ApiClient::new(&app.app_state.config.api_base_url)
-            .with_native(use_native, key);
+        app.api_client =
+            ApiClient::new(&app.app_state.config.api_base_url).with_native(use_native, key);
         app.component_manager = ComponentManager::new();
         app.connection_status = ConnectionStatus::Disconnected;
         app.async_state = Arc::new(Mutex::new(AsyncState::default()));
         // fetch_queue is not an Option; it is always present. Ensure it is.
         app.fetch_queue = Arc::new(Mutex::new(Vec::new()));
-        
+
         // Create Tokio runtime in a background thread
         let rt = tokio::runtime::Runtime::new().unwrap();
         let handle = rt.handle().clone();
         std::thread::spawn(move || {
             rt.block_on(async {
-                futures::future::pending::<()>().await;  // Keeps runtime alive indefinitely
+                futures::future::pending::<()>().await; // Keeps runtime alive indefinitely
             });
         });
         app.rt_handle = Some(handle);
@@ -216,28 +226,43 @@ impl TemplateApp {
                 }
             }
 
-            // Handle price history results  
+            // Handle price history results
             for (symbol, result) in state.price_history_results.drain(..) {
                 if let Some(portfolios) = &mut self.app_state.portfolios {
                     if let Some(selected_name) = &self.selected_portfolio {
                         if let Some(portfolio) = portfolios.get_mut(selected_name) {
                             match result {
                                 Ok(price_points) => {
-                                    log::info!("Updating portfolio {} with {} price points for {}", selected_name, price_points.len(), symbol);
-                                    
+                                    log::info!(
+                                        "Updating portfolio {} with {} price points for {}",
+                                        selected_name,
+                                        price_points.len(),
+                                        symbol
+                                    );
+
                                     // Merge with existing history
-                                    let mut history_map = portfolio.price_history.clone().unwrap_or_default();
+                                    let mut history_map =
+                                        portfolio.price_history.clone().unwrap_or_default();
                                     history_map.insert(symbol.clone(), price_points);
                                     portfolio.update_price_history(history_map);
 
                                     // Notify components that data has changed
                                     self.component_manager.notify_data_updated(portfolio);
-                                    
-                                    log::info!("Portfolio now has price history for {} symbols", 
-                                        portfolio.price_history.as_ref().map(|h| h.len()).unwrap_or(0));
+
+                                    log::info!(
+                                        "Portfolio now has price history for {} symbols",
+                                        portfolio
+                                            .price_history
+                                            .as_ref()
+                                            .map(|h| h.len())
+                                            .unwrap_or(0)
+                                    );
                                 }
                                 Err(e) => {
-                                    self.last_error_message = Some(format!("Failed to load price history for {}: {}", symbol, e));
+                                    self.last_error_message = Some(format!(
+                                        "Failed to load price history for {}: {}",
+                                        symbol, e
+                                    ));
                                 }
                             }
                         }
@@ -254,7 +279,10 @@ impl TemplateApp {
         if let Ok(mut queue) = self.fetch_queue.try_lock() {
             if !queue.is_empty() {
                 let symbols_to_fetch: Vec<String> = queue.drain(..).collect();
-                log::info!("Processing fetch queue with {} items", symbols_to_fetch.len());
+                log::info!(
+                    "Processing fetch queue with {} items",
+                    symbols_to_fetch.len()
+                );
                 for symbol in symbols_to_fetch {
                     self.fetch_price_history_async(symbol, ctx);
                 }
@@ -265,7 +293,7 @@ impl TemplateApp {
     fn handle_portfolio_selection_change(&mut self) {
         if self.selected_portfolio != self.last_selected_portfolio {
             self.last_selected_portfolio = self.selected_portfolio.clone();
-            
+
             // Queue price history fetches for new portfolio
             if let Some(portfolio_name) = &self.selected_portfolio {
                 if let Some(portfolios) = &self.app_state.portfolios {
@@ -293,51 +321,53 @@ impl TemplateApp {
         let async_state = Arc::clone(&self.async_state);
         let ctx = ctx.clone();
         let ctx2 = ctx.clone();
-        
+
         // Mark symbol as being fetched
         if let Ok(mut state) = self.async_state.try_lock() {
             state.fetching_symbols.insert(symbol.clone());
         }
-        
+
         // Request immediate repaint to show spinner
         ctx.request_repaint();
-        
+
         log::info!("Spawning fetch for symbol: {}", symbol);
-        
+
         if let Some(handle) = &self.rt_handle {
             handle.spawn(async move {
-            log::debug!("Starting fetch for symbol: {}", symbol);
-            let start = std::time::Instant::now();
-            
-            let result = api_client
-                .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
-                .await;
-            
-            log::info!("Fetch for {} completed in {:?}", symbol, start.elapsed());
-            
-            let price_points = match result {
-                Ok(mut history_map) => {
-                    if let Some(points) = history_map.remove(&symbol) {
-                        log::info!("Got {} price points for {}", points.len(), symbol);
-                        Ok(points)
-                    } else {
-                        log::warn!("No price history found for symbol {}", symbol);
-                        Err("No price history found for symbol".to_string())
+                log::debug!("Starting fetch for symbol: {}", symbol);
+                let start = std::time::Instant::now();
+
+                let result = api_client
+                    .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
+                    .await;
+
+                log::info!("Fetch for {} completed in {:?}", symbol, start.elapsed());
+
+                let price_points = match result {
+                    Ok(mut history_map) => {
+                        if let Some(points) = history_map.remove(&symbol) {
+                            log::info!("Got {} price points for {}", points.len(), symbol);
+                            Ok(points)
+                        } else {
+                            log::warn!("No price history found for symbol {}", symbol);
+                            Err("No price history found for symbol".to_string())
+                        }
                     }
+                    Err(e) => {
+                        log::error!("Error fetching {}: {}", symbol, e);
+                        Err(e.to_string())
+                    }
+                };
+
+                if let Ok(mut state) = async_state.lock() {
+                    state.fetching_symbols.remove(&symbol);
+                    state
+                        .price_history_results
+                        .push((symbol.clone(), price_points));
+                    log::debug!("Updated async state for {}", symbol);
                 }
-                Err(e) => {
-                    log::error!("Error fetching {}: {}", symbol, e);
-                    Err(e.to_string())
-                }
-            };
-            
-            if let Ok(mut state) = async_state.lock() {
-                state.fetching_symbols.remove(&symbol);
-                state.price_history_results.push((symbol.clone(), price_points));
-                log::debug!("Updated async state for {}", symbol);
-            }
-            
-            ctx2.request_repaint();
+
+                ctx2.request_repaint();
             });
         } else {
             log::warn!("Runtime handle not available, falling back to tokio::spawn");
@@ -346,7 +376,7 @@ impl TemplateApp {
                 let result = api_client
                     .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
                     .await;
-                
+
                 let price_points = match result {
                     Ok(mut history_map) => {
                         if let Some(points) = history_map.remove(&symbol) {
@@ -357,12 +387,14 @@ impl TemplateApp {
                     }
                     Err(e) => Err(e.to_string()),
                 };
-                
+
                 if let Ok(mut state) = async_state.lock() {
                     state.fetching_symbols.remove(&symbol);
-                    state.price_history_results.push((symbol.clone(), price_points));
+                    state
+                        .price_history_results
+                        .push((symbol.clone(), price_points));
                 }
-                
+
                 ctx_clone.request_repaint();
             });
         }
@@ -381,9 +413,9 @@ impl TemplateApp {
                         }
                     });
                 });
-                
+
                 ui.separator();
-                
+
                 // Error display using Frame for better visibility
                 if let Some(ref error) = self.last_error_message {
                     egui::Frame::new()
@@ -396,7 +428,7 @@ impl TemplateApp {
                         });
                     ui.add_space(8.0);
                 }
-                
+
                 // Portfolio list with demo-style organization
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
@@ -409,9 +441,9 @@ impl TemplateApp {
                                 });
                             } else {
                                 // Collect portfolio items to avoid borrowing issues
-                                let portfolio_items: Vec<(String, crate::portfolio::Portfolio)> = 
+                                let portfolio_items: Vec<(String, crate::portfolio::Portfolio)> =
                                     portfolios.iter().map(|(name, portfolio)| (name.clone(), portfolio.clone())).collect();
-                                
+
                                 for (name, portfolio) in portfolio_items {
                                     self.render_portfolio_item(ui, &name, &portfolio);
                                 }
@@ -422,9 +454,9 @@ impl TemplateApp {
                             });
                         }
                     });
-                
+
                 ui.separator();
-                
+
                 // Connection section with demo-style layout
                 ui.collapsing("🔗 Connection", |ui| {
                     egui::Grid::new(ui.id().with("connection_grid"))  // Salted ID
@@ -447,7 +479,7 @@ impl TemplateApp {
                                 }
                             }
                             ui.end_row();
-                            
+
                             ui.label("Provider:");
                             if self.app_state.config.use_native_provider {
                                 ui.colored_label(egui::Color32::LIGHT_BLUE, "Native (Alpha Vantage)");
@@ -455,33 +487,58 @@ impl TemplateApp {
                                 ui.colored_label(egui::Color32::LIGHT_GREEN, "Server Backend");
                             }
                             ui.end_row();
-                            
+
                             ui.label("API:");
                             ui.small(&self.app_state.config.api_base_url);
                             ui.end_row();
                         });
-                    
+
+                    // Controls to avoid rate limiting and enable manual loads
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.constant_reload, "Constant reload");
+                        if self.app_state.config.use_native_provider {
+                            if ui.button("Fetch Holdings Now").on_hover_text("One-shot fetch for selected portfolio holdings (native provider)").clicked() {
+                                // Queue selected portfolio symbols once
+                                if let (Some(selected), Some(portfolios)) = (&self.selected_portfolio, &self.app_state.portfolios) {
+                                    if let Some(p) = portfolios.get(selected) {
+                                        if let Ok(mut q) = self.fetch_queue.try_lock() {
+                                            for sym in p.holdings.keys() {
+                                                if !q.contains(sym) {
+                                                    q.push(sym.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            if ui.button("Load from Backend").on_hover_text("One-shot fetch for selected portfolio holdings (server backend)").clicked() {
+                                self.backend_manual_load_pending = true;
+                            }
+                        }
+                    });
+
                     ui.horizontal(|ui| {
                         if ui.button("Test Connection").clicked() {
                             self.test_connection_async(ctx);
                         }
-                        
+
                         let switch_text = if self.app_state.config.use_native_provider {
                             "Switch to Server"
                         } else {
                             "Switch to Native"
                         };
-                        
+
                         if ui.button(switch_text).on_hover_text("Toggle data provider").clicked() {
                             self.toggle_data_provider();
                         }
                     });
-                    
+
                     if !self.test_message.is_empty() {
                         ui.small(&self.test_message);
                     }
                 });
-                
+
                 // Live fetch status section
                 if let Ok(state) = self.async_state.try_lock() {
                     if !state.fetching_symbols.is_empty() {
@@ -501,20 +558,24 @@ impl TemplateApp {
                 }
             });
     }
-    
-    fn render_portfolio_item(&mut self, ui: &mut egui::Ui, name: &String, portfolio: &crate::portfolio::Portfolio) {
+
+    fn render_portfolio_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        name: &String,
+        portfolio: &crate::portfolio::Portfolio,
+    ) {
         let is_selected = Some(name) == self.selected_portfolio.as_ref();
-        
+
         // Portfolio card with demo-style frame
         let frame = if is_selected {
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().selection.bg_fill)
                 .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color))
         } else {
-            egui::Frame::group(ui.style())
-                .fill(ui.visuals().faint_bg_color)
+            egui::Frame::group(ui.style()).fill(ui.visuals().faint_bg_color)
         };
-        
+
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 let response = ui.selectable_label(is_selected, name);
@@ -536,36 +597,40 @@ impl TemplateApp {
                         }
                     }
                 }
-                
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("🗑").on_hover_text("Delete Portfolio").clicked() {
+                    if ui
+                        .small_button("🗑")
+                        .on_hover_text("Delete Portfolio")
+                        .clicked()
+                    {
                         // Mark for deletion (will be handled after the loop)
                         self.portfolio_to_delete = Some(name.clone());
                     }
                 });
             });
-            
+
             if is_selected {
                 ui.separator();
-                egui::Grid::new(ui.id().with(("portfolio_details", name)))  // Salted with ui.id() and name
+                egui::Grid::new(ui.id().with(("portfolio_details", name))) // Salted with ui.id() and name
                     .num_columns(2)
                     .spacing([8.0, 2.0])
                     .show(ui, |ui| {
                         ui.small("Value:");
                         ui.small(format!("${:.0}", portfolio.total_value));
                         ui.end_row();
-                        
+
                         ui.small("Holdings:");
                         ui.small(format!("{} symbols", portfolio.holdings.len()));
                         ui.end_row();
-                        
+
                         ui.small("Updated:");
                         ui.small(portfolio.last_updated.format("%m/%d %H:%M").to_string());
                         ui.end_row();
                     });
             }
         });
-        
+
         ui.add_space(4.0);
     }
 
@@ -588,12 +653,15 @@ impl TemplateApp {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
                     }
                 }
-                
+
                 ui.separator();
                 ui.heading("Configuration");
                 ui.label(format!("API URL: {}", self.app_state.config.api_base_url));
-                ui.label(format!("Native Mode: {}", self.app_state.config.use_native_provider));
-                
+                ui.label(format!(
+                    "Native Mode: {}",
+                    self.app_state.config.use_native_provider
+                ));
+
                 if let Some(portfolios) = &self.app_state.portfolios {
                     ui.separator();
                     ui.heading("Portfolios");
@@ -605,44 +673,44 @@ impl TemplateApp {
     fn test_connection_async(&mut self, ctx: &egui::Context) {
         self.connection_status = ConnectionStatus::Connecting;
         self.test_message = "Testing connection...".to_string();
-        
+
         let api_client = self.api_client.clone();
         let async_state = Arc::clone(&self.async_state);
         let ctx = ctx.clone();
-        
+
         if let Some(handle) = &self.rt_handle {
             handle.spawn(async move {
                 let result = api_client.test_health().await;
-                
+
                 if let Ok(mut state) = async_state.lock() {
                     state.connection_result = Some(result.map_err(|e| e.to_string()));
                 }
-                
+
                 ctx.request_repaint();
             });
         } else {
             tokio::spawn(async move {
                 let result = api_client.test_health().await;
-                
+
                 if let Ok(mut state) = async_state.lock() {
                     state.connection_result = Some(result.map_err(|e| e.to_string()));
                 }
-                
+
                 ctx.request_repaint();
             });
         }
     }
-    
+
     fn create_sample_portfolio(&mut self) {
         let mut portfolio = crate::portfolio::Portfolio::new("Sample Portfolio".to_string());
-        
+
         // Add some sample holdings
         portfolio.holdings.insert("AAPL".to_string(), 10.0);
         portfolio.holdings.insert("MSFT".to_string(), 5.0);
         portfolio.holdings.insert("GOOGL".to_string(), 3.0);
         portfolio.holdings.insert("TSLA".to_string(), 2.0);
         portfolio.holdings.insert("NVDA".to_string(), 1.0);
-        
+
         // Set some reasonable weights and total value
         portfolio.total_value = 50000.0;
         portfolio.current_weights.insert("AAPL".to_string(), 0.4);
@@ -650,12 +718,12 @@ impl TemplateApp {
         portfolio.current_weights.insert("GOOGL".to_string(), 0.2);
         portfolio.current_weights.insert("TSLA".to_string(), 0.1);
         portfolio.current_weights.insert("NVDA".to_string(), 0.05);
-        
+
         // Initialize portfolios map if needed
         if self.app_state.portfolios.is_none() {
             self.app_state.portfolios = Some(HashMap::new());
         }
-        
+
         if let Some(portfolios) = &mut self.app_state.portfolios {
             portfolios.insert(portfolio.name.clone(), portfolio.clone());
             self.selected_portfolio = Some(portfolio.name);
@@ -676,28 +744,31 @@ impl TemplateApp {
             }
         }
     }
-    
+
     fn toggle_data_provider(&mut self) {
         // Toggle the provider mode
         self.app_state.config.use_native_provider = !self.app_state.config.use_native_provider;
-        
+
         // Recreate API client with new settings
         let use_native = self.app_state.config.use_native_provider;
         let key = self.app_state.config.alphavantage_api_key.clone();
-        self.api_client = ApiClient::new(&self.app_state.config.api_base_url)
-            .with_native(use_native, key);
-        
+        self.api_client =
+            ApiClient::new(&self.app_state.config.api_base_url).with_native(use_native, key);
+
         // Reset connection status
         self.connection_status = ConnectionStatus::Disconnected;
-        
+
         // Update test message
         if use_native {
             self.test_message = "Switched to Native (Alpha Vantage) provider".to_string();
         } else {
             self.test_message = "Switched to Server Backend provider".to_string();
         }
-        
-        log::info!("Data provider switched to: {}", if use_native { "Native" } else { "Server" });
+
+        log::info!(
+            "Data provider switched to: {}",
+            if use_native { "Native" } else { "Server" }
+        );
     }
 }
 
@@ -707,10 +778,7 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
         ui.label("Powered by ");
         ui.hyperlink_to("egui", "https://github.com/emilk/egui");
         ui.label(" and ");
-        ui.hyperlink_to(
-            "eframe",
-            "https://github.com/emilk/eframe",
-        );
+        ui.hyperlink_to("eframe", "https://github.com/emilk/eframe");
         ui.label(".");
     });
 }
@@ -728,12 +796,23 @@ impl eframe::App for TemplateApp {
         self.handle_async_results();
 
         // If selected portfolio exists but no price history present and nothing is fetching,
-        // auto-queue all holdings once to populate charts.
-        if let (Some(selected), Some(portfolios)) = (self.selected_portfolio.clone(), &self.app_state.portfolios) {
+        // auto-queue all holdings once to populate charts (only when constant_reload is ON).
+        if let (Some(selected), Some(portfolios)) =
+            (self.selected_portfolio.clone(), &self.app_state.portfolios)
+        {
             if let Some(p) = portfolios.get(&selected) {
-                let has_any_history = p.price_history.as_ref().map(|m| !m.is_empty()).unwrap_or(false);
-                let fetching_any = self.async_state.try_lock().ok().map(|s| !s.fetching_symbols.is_empty()).unwrap_or(false);
-                if !has_any_history && !fetching_any {
+                let has_any_history = p
+                    .price_history
+                    .as_ref()
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false);
+                let fetching_any = self
+                    .async_state
+                    .try_lock()
+                    .ok()
+                    .map(|s| !s.fetching_symbols.is_empty())
+                    .unwrap_or(false);
+                if self.constant_reload && !has_any_history && !fetching_any {
                     if let Ok(mut q) = self.fetch_queue.try_lock() {
                         let mut added = false;
                         for sym in p.holdings.keys() {
@@ -743,7 +822,30 @@ impl eframe::App for TemplateApp {
                             }
                         }
                         if added {
-                            log::info!("Auto-queued fetch for holdings of selected portfolio '{}'", selected);
+                            log::info!(
+                                "Auto-queued fetch for holdings of selected portfolio '{}'",
+                                selected
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle one-shot manual backend load (queues holdings)
+        if self.backend_manual_load_pending {
+            self.backend_manual_load_pending = false;
+            if !self.app_state.config.use_native_provider {
+                if let (Some(selected), Some(portfolios)) =
+                    (&self.selected_portfolio, &self.app_state.portfolios)
+                {
+                    if let Some(p) = portfolios.get(selected) {
+                        if let Ok(mut q) = self.fetch_queue.try_lock() {
+                            for sym in p.holdings.keys() {
+                                if !q.contains(sym) {
+                                    q.push(sym.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -755,19 +857,19 @@ impl eframe::App for TemplateApp {
 
         // Check for portfolio selection change and queue fetches as needed
         self.handle_portfolio_selection_change();
-        
+
         // Request continuous updates while fetching
         if let Ok(state) = self.async_state.try_lock() {
             if !state.fetching_symbols.is_empty() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
-        
+
         // Handle portfolio deletion
         if let Some(portfolio_to_delete) = self.portfolio_to_delete.take() {
             if let Some(portfolios) = &mut self.app_state.portfolios {
                 portfolios.remove(&portfolio_to_delete);
-                
+
                 // If the deleted portfolio was selected, clear selection
                 if self.selected_portfolio.as_ref() == Some(&portfolio_to_delete) {
                     self.selected_portfolio = None;
@@ -812,13 +914,13 @@ impl eframe::App for TemplateApp {
 
         // Central panel with portfolio application content
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let (Some(portfolios), Some(selected_name)) = (
-                &self.app_state.portfolios,
-                &self.selected_portfolio,
-            ) {
+            if let (Some(portfolios), Some(selected_name)) =
+                (&self.app_state.portfolios, &self.selected_portfolio)
+            {
                 if let Some(portfolio) = portfolios.get(selected_name) {
                     // Portfolio is selected - render component tabs and main content
-                    self.component_manager.render_all(ui, portfolio, &self.app_state.config);
+                    self.component_manager
+                        .render_all(ui, portfolio, &self.app_state.config);
                 } else {
                     ui.centered_and_justified(|ui| {
                         ui.heading("Portfolio not found");
@@ -830,11 +932,13 @@ impl eframe::App for TemplateApp {
                     ui.vertical_centered(|ui| {
                         ui.heading("Welcome to Fractal Portfolio Tracker");
                         ui.add_space(20.0);
-                        
-                        if self.app_state.portfolios.is_none() || self.app_state.portfolios.as_ref().unwrap().is_empty() {
+
+                        if self.app_state.portfolios.is_none()
+                            || self.app_state.portfolios.as_ref().unwrap().is_empty()
+                        {
                             ui.label("No portfolios available. Create one to get started.");
                             ui.add_space(10.0);
-                            
+
                             if ui.button("Create Sample Portfolio").clicked() {
                                 self.create_sample_portfolio();
                             }
@@ -844,7 +948,7 @@ impl eframe::App for TemplateApp {
                     });
                 });
             }
-            
+
             // Footer
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 powered_by_egui_and_eframe(ui);
