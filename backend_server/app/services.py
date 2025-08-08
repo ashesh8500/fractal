@@ -20,6 +20,7 @@ from portfolio_lib.services.data.yfinance import YFinanceDataService
 from portfolio_lib.services.data.alphavantage import AlphaVantageDataService
 
 from .core.result import Result, AppError, ErrorType, AppResult, safe_call, validate
+import traceback
 from .schemas import (
     PortfolioCreate, PortfolioResponse, StrategyExecuteRequest, 
     BacktestRequest, MarketDataRequest, DataProvider
@@ -157,9 +158,25 @@ class PortfolioService:
     def _run_strategy(self, portfolio: Portfolio, request: StrategyExecuteRequest) -> AppResult[Any]:
         """Execute strategy on portfolio using portfolio_lib implementation when available."""
         def _exec() -> Any:
-            # Convert request to StrategyConfig if needed
-            cfg = StrategyConfig(**request.model_dump()) if hasattr(request, "model_dump") else StrategyConfig(**request.__dict__)
-            result = portfolio.run_strategy(request.strategy_name, cfg)
+            try:
+                # Build StrategyConfig explicitly to match portfolio_lib signature
+                if hasattr(request, "model_dump"):
+                    data = request.model_dump()
+                else:
+                    data = request.__dict__
+
+                cfg = StrategyConfig(
+                    name=data.get("strategy_name") or getattr(request, "strategy_name", ""),
+                    parameters=data.get("parameters") or {},
+                    rebalance_frequency=data.get("rebalance_frequency", "monthly"),
+                    risk_tolerance=data.get("risk_tolerance", 0.1),
+                    max_position_size=data.get("max_position_size", 0.3),
+                )
+
+                result = portfolio.run_strategy(cfg.name, cfg)
+            except Exception as e:
+                traceback.print_exc()
+                raise e
             # Normalize to dict if the model provides to_dict
             return result.to_dict() if hasattr(result, "to_dict") else result
         return safe_call(_exec)
@@ -167,8 +184,27 @@ class PortfolioService:
     def _run_backtest(self, portfolio: Portfolio, request: BacktestRequest) -> AppResult[Any]:
         """Run backtest on portfolio using portfolio_lib implementation when available."""
         def _exec() -> Any:
-            cfg = BacktestConfig(**request.model_dump()) if hasattr(request, "model_dump") else BacktestConfig(**request.__dict__)
-            result = portfolio.run_backtest(request.strategy_name, cfg)
+            try:
+                # Build BacktestConfig explicitly to avoid passing unsupported fields (e.g., strategy_name)
+                if hasattr(request, "model_dump"):
+                    data = request.model_dump()
+                else:
+                    data = request.__dict__
+
+                cfg = BacktestConfig(
+                    start_date=data.get("start_date"),
+                    end_date=data.get("end_date"),
+                    initial_capital=data.get("initial_capital", 100000.0),
+                    commission=data.get("commission", 0.001),
+                    slippage=data.get("slippage", 0.0005),
+                    benchmark=data.get("benchmark", "SPY"),
+                )
+
+                strategy_name = data.get("strategy_name") or getattr(request, "strategy_name", "")
+                result = portfolio.run_backtest(strategy_name, cfg)
+            except Exception as e:
+                traceback.print_exc()
+                raise e
             return result.to_dict() if hasattr(result, "to_dict") else result
         return safe_call(_exec)
     

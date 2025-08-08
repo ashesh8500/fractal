@@ -2,7 +2,6 @@
 //! and/or directly with external data providers (native mode).
 
 use crate::portfolio::{Portfolio, PricePoint};
-use rand::{Rng, thread_rng};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -477,7 +476,7 @@ impl ApiClient {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_nanos() as u64)
                         .unwrap_or(0);
-                    let jitter_ms: u64 = (now_nanos % 251);
+                    let jitter_ms: u64 = now_nanos % 251;
                     let delay = base_delay.saturating_mul(exp) + Duration::from_millis(jitter_ms);
 
                     log::warn!(
@@ -493,6 +492,69 @@ impl ApiClient {
                 }
             }
         }
+    }
+
+    /// Run a backtest via backend. Native provider path is unsupported for backtests here.
+    pub async fn run_backtest(
+        &self,
+        portfolio_name: &str,
+        strategy_name: &str,
+        start_date: &str,
+        end_date: &str,
+        initial_capital: f64,
+        commission: f64,
+        slippage: f64,
+        benchmark: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        if self.use_native_provider {
+            return Err(ApiError::Unsupported(
+                "Backtest in native mode is not implemented in this client".into(),
+            ));
+        }
+
+        let url = format!(
+            "{}/portfolios/{}/backtests",
+            self.base_url,
+            urlencoding::encode(portfolio_name)
+        );
+
+        let payload = serde_json::json!({
+            "strategy_name": strategy_name,
+            "start_date": start_date,
+            "end_date": end_date,
+            "initial_capital": initial_capital,
+            "commission": commission,
+            "slippage": slippage,
+            "benchmark": benchmark,
+        });
+
+        // Retry on rate limit or transient network
+        self.with_retries(|| {
+            let this = self.clone();
+            let url_owned = url.clone();
+            let payload_owned = payload.clone();
+            async move {
+                let resp = this.client.post(&url_owned).json(&payload_owned).send().await?;
+                if resp.status().is_success() {
+                    let v: serde_json::Value = resp.json().await?;
+                    Ok(v)
+                } else {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if status.as_u16() == 429 || text.contains("rate limit") {
+                        return Err(ApiError::RateLimited(format!(
+                            "backtest rate-limited: {} {}",
+                            status, text
+                        )));
+                    }
+                    Err(ApiError::Backend(format!(
+                        "backtest failed: status={}, body={}",
+                        status, text
+                    )))
+                }
+            }
+        })
+        .await
     }
 }
 

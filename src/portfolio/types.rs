@@ -79,6 +79,10 @@ pub struct BacktestResult {
     pub trades_executed: u32,
     pub final_portfolio_value: f64,
     pub equity_curve: Vec<EquityPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub benchmark_curve: Option<Vec<EquityPoint>>, // optional benchmark equity curve for overlay
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weights_over_time: Option<Vec<WeightsAtTime>>, // allocation snapshots per rebalance
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +95,12 @@ pub struct DateRange {
 pub struct EquityPoint {
     pub date: DateTime<Utc>,
     pub value: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightsAtTime {
+    pub timestamp: DateTime<Utc>,
+    pub weights: HashMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,4 +155,20 @@ pub struct Trade {
 pub enum TradeAction {
     Buy,
     Sell,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeExecution {
+    pub symbol: String,
+    pub action: String, // "buy" | "sell"
+    pub quantity_shares: f64,
+    pub weight_fraction: f64,
+    pub price: f64,
+    pub gross_value: f64,
+    pub commission: f64,
+    pub slippage: f64,
+    pub total_cost: f64,
+    pub net_cash_delta: f64,
+    pub timestamp: DateTime<Utc>,
+    pub reason: Option<String>,
 }

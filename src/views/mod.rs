@@ -9,8 +9,10 @@ pub mod dashboard;
 pub mod charts;
 pub mod tables;
 pub mod candles;
+pub mod backtest;
 
 pub use dashboard::DashboardComponent;
 pub use charts::ChartsComponent;
 pub use tables::TablesComponent;
 pub use candles::CandlesComponent;
+pub use backtest::BacktestComponent;

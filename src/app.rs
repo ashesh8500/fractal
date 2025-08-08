@@ -1,6 +1,7 @@
 use crate::api::ApiClient;
 use crate::components::ComponentManager;
 use crate::state::AppState;
+use crate::views::backtest::drain_backtest_requests;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -636,37 +637,41 @@ impl TemplateApp {
 
     fn render_status_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("Status")
+            .resizable(true)
+            .default_size(egui::Vec2::new(500.0, 400.0))
             .open(&mut self.show_status_window)
-            .show(ctx, |ui| {
-                ui.heading("Connection Status");
-                match &self.connection_status {
-                    ConnectionStatus::Disconnected => {
-                        ui.colored_label(egui::Color32::RED, "Disconnected");
+            .show(ctx, |ui_win| {
+                egui::ScrollArea::vertical().show(ui_win, |ui| {
+                    ui.heading("Connection Status");
+                    match &self.connection_status {
+                        ConnectionStatus::Disconnected => {
+                            ui.colored_label(egui::Color32::RED, "Disconnected");
+                        }
+                        ConnectionStatus::Connecting => {
+                            ui.colored_label(egui::Color32::YELLOW, "Connecting...");
+                        }
+                        ConnectionStatus::Connected => {
+                            ui.colored_label(egui::Color32::GREEN, "Connected");
+                        }
+                        ConnectionStatus::Error(e) => {
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                        }
                     }
-                    ConnectionStatus::Connecting => {
-                        ui.colored_label(egui::Color32::YELLOW, "Connecting...");
-                    }
-                    ConnectionStatus::Connected => {
-                        ui.colored_label(egui::Color32::GREEN, "Connected");
-                    }
-                    ConnectionStatus::Error(e) => {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
-                    }
-                }
 
-                ui.separator();
-                ui.heading("Configuration");
-                ui.label(format!("API URL: {}", self.app_state.config.api_base_url));
-                ui.label(format!(
-                    "Native Mode: {}",
-                    self.app_state.config.use_native_provider
-                ));
-
-                if let Some(portfolios) = &self.app_state.portfolios {
                     ui.separator();
-                    ui.heading("Portfolios");
-                    ui.label(format!("Loaded: {}", portfolios.len()));
-                }
+                    ui.heading("Configuration");
+                    ui.label(format!("API URL: {}", self.app_state.config.api_base_url));
+                    ui.label(format!(
+                        "Native Mode: {}",
+                        self.app_state.config.use_native_provider
+                    ));
+
+                    if let Some(portfolios) = &self.app_state.portfolios {
+                        ui.separator();
+                        ui.heading("Portfolios");
+                        ui.label(format!("Loaded: {}", portfolios.len()));
+                    }
+                });
             });
     }
 
@@ -794,6 +799,258 @@ impl eframe::App for TemplateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle async results
         self.handle_async_results();
+
+        // Drain any backtest requests emitted by components and spawn backend calls
+        for ev in drain_backtest_requests(ctx) {
+            let api_client = self.api_client.clone();
+            let ctx_clone = ctx.clone();
+            let selected = ev.portfolio_name.clone();
+            // Capture current holdings to create backend portfolio if missing
+            let holdings: HashMap<String, f64> = self
+                .app_state
+                .portfolios
+                .as_ref()
+                .and_then(|m| m.get(&selected))
+                .map(|p| p.holdings.clone())
+                .unwrap_or_default();
+
+            if let Some(handle) = &self.rt_handle {
+                handle.spawn(async move {
+                    // Ensure portfolio exists on backend
+                    let ensure_res = match api_client.get_portfolio(&selected).await {
+                        Ok(_) => Ok(()),
+                        Err(_) => {
+                            // Try to create with current holdings
+                            api_client
+                                .create_portfolio(&selected, holdings)
+                                .await
+                                .map(|_| ())
+                        }
+                    };
+
+                    let res = match ensure_res {
+                        Ok(()) => {
+                            api_client
+                                .run_backtest(
+                                    &selected,
+                                    &ev.strategy_name,
+                                    &ev.start_date,
+                                    &ev.end_date,
+                                    ev.initial_capital,
+                                    ev.commission,
+                                    ev.slippage,
+                                    &ev.benchmark,
+                                )
+                                .await
+                        }
+                        Err(e) => Err(e),
+                    };
+
+                    // Store raw result JSON in memory for UI thread to pick up via ctx memory
+                    ctx_clone.memory_mut(|mem| {
+                        let id = egui::Id::new("backtest_result_json");
+                        let mut list: Vec<(String, Result<serde_json::Value, String>)> =
+                            mem.data.get_temp(id).unwrap_or_default();
+                        list.push((selected.clone(), res.map_err(|e| e.to_string())));
+                        mem.data.insert_temp(id, list);
+                    });
+
+                    ctx_clone.request_repaint();
+                });
+            }
+        }
+
+        // Consume any finished backtests and update portfolios
+        ctx.memory_mut(|mem| {
+            let id = egui::Id::new("backtest_result_json");
+            if let Some(list) = mem.data.get_temp::<Vec<(String, Result<serde_json::Value, String>)>>(id) {
+                for (pname, item) in list.into_iter() {
+                    if let Some(portfolios) = &mut self.app_state.portfolios {
+                        if let Some(p) = portfolios.get_mut(&pname) {
+                            match item {
+                                Ok(v) => {
+                                    // Try direct deserialization first
+                                    if let Ok(bt) = serde_json::from_value::<crate::portfolio::BacktestResult>(v.clone()) {
+                                        p.backtest_results = Some(bt);
+                                    } else {
+                                        // Manual adapter: convert backend schema -> UI BacktestResult
+                                        use chrono::{DateTime, NaiveDateTime, Utc};
+                                        use crate::portfolio::{BacktestResult as UiBacktestResult, DateRange, EquityPoint, PerformanceMetrics};
+
+                                        fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
+                                            if let Ok(dt) = DateTime::parse_from_rfc3339(s) { return Some(dt.with_timezone(&Utc)); }
+                                            if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+                                                return Some(DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc));
+                                            }
+                                            if let Ok(nd) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                                                if let Some(ndt) = nd.and_hms_opt(0,0,0) {
+                                                    return Some(DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc));
+                                                }
+                                            }
+                                            None
+                                        }
+
+                                        let strategy_name = v.get("strategy_name").and_then(|x| x.as_str()).unwrap_or("unknown").to_string();
+                                        let start_s = v.get("start_date").and_then(|x| x.as_str()).or_else(|| v.get("config").and_then(|c| c.get("start_date")).and_then(|x| x.as_str()));
+                                        let end_s = v.get("end_date").and_then(|x| x.as_str()).or_else(|| v.get("config").and_then(|c| c.get("end_date")).and_then(|x| x.as_str()));
+                                        let start_dt = start_s.and_then(parse_dt).unwrap_or_else(|| Utc::now());
+                                        let end_dt = end_s.and_then(parse_dt).unwrap_or_else(|| Utc::now());
+
+                                        let portfolio_values: Vec<f64> = v.get("portfolio_values").and_then(|x| x.as_array()).map(|arr| arr.iter().filter_map(|n| n.as_f64()).collect()).unwrap_or_default();
+                                        let timestamps_raw: Vec<String> = v.get("timestamps").and_then(|x| x.as_array()).map(|arr| arr.iter().filter_map(|s| s.as_str().map(|t| t.to_string())).collect()).unwrap_or_default();
+                                        let mut equity_curve: Vec<EquityPoint> = Vec::new();
+                                        if !portfolio_values.is_empty() {
+                                            for (i, val) in portfolio_values.iter().enumerate() {
+                                                let dt = timestamps_raw.get(i).and_then(|s| parse_dt(s)).unwrap_or_else(|| start_dt + chrono::Duration::days(i as i64));
+                                                equity_curve.push(EquityPoint { date: dt, value: *val });
+                                            }
+                                        }
+
+                                        let perf = PerformanceMetrics {
+                                            total_return: v.get("total_return").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                            annualized_return: v.get("annualized_return").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                            alpha: v.get("alpha").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                            beta: v.get("beta").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                        };
+
+                                        let bench_perf = v.get("benchmark_return").and_then(|x| x.as_f64()).map(|br| PerformanceMetrics { total_return: br, annualized_return: 0.0, alpha: 0.0, beta: 1.0 });
+
+                                        let final_value = portfolio_values.last().copied().unwrap_or(0.0);
+                                        let trades_executed = v.get("total_trades").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+
+                                        let mut adapted = UiBacktestResult {
+                                            strategy_name,
+                                            period: DateRange { start_date: start_dt, end_date: end_dt },
+                                            performance: perf,
+                                            benchmark_performance: bench_perf,
+                                            trades_executed,
+                                            final_portfolio_value: final_value,
+                                            equity_curve,
+                                            benchmark_curve: None,
+                                            weights_over_time: None,
+                                        };
+
+                                        // Optional: parse benchmark curve if present
+                                        // Supports shapes: { benchmark_curve: [{timestamp, value}] } or
+                                        // separate arrays: benchmark_values [+ timestamps]
+                                        if let Some(curve_arr) = v.get("benchmark_curve").and_then(|x| x.as_array()) {
+                                            let mut bc: Vec<EquityPoint> = Vec::new();
+                                            for item in curve_arr {
+                                                if let (Some(ts), Some(val)) = (item.get("timestamp").and_then(|x| x.as_str()), item.get("value").and_then(|x| x.as_f64())) {
+                                                    if let Some(dt) = parse_dt(ts) {
+                                                        bc.push(EquityPoint { date: dt, value: val });
+                                                    }
+                                                }
+                                            }
+                                            if !bc.is_empty() { adapted.benchmark_curve = Some(bc); }
+                                        } else if let Some(vals) = v.get("benchmark_values").and_then(|x| x.as_array()) {
+                                            let ts = v.get("benchmark_timestamps").and_then(|x| x.as_array());
+                                            let mut bc: Vec<EquityPoint> = Vec::new();
+                                            for (i, valv) in vals.iter().enumerate() {
+                                                if let Some(val) = valv.as_f64() {
+                                                    let dt = ts.and_then(|arr| arr.get(i)).and_then(|s| s.as_str()).and_then(parse_dt).unwrap_or_else(|| start_dt + chrono::Duration::days(i as i64));
+                                                    bc.push(EquityPoint { date: dt, value: val });
+                                                }
+                                            }
+                                            if !bc.is_empty() { adapted.benchmark_curve = Some(bc); }
+                                        }
+
+                                        // Optional: parse weights_over_time if present; otherwise derive from executed_trades weight_fraction per timestamp
+                                        if let Some(wot) = v.get("weights_over_time").and_then(|x| x.as_array()) {
+                                            let mut snaps: Vec<crate::portfolio::WeightsAtTime> = Vec::new();
+                                            for item in wot {
+                                                // Support both {timestamp} and {date}
+                                                let ts_opt = item.get("timestamp").and_then(|x| x.as_str()).and_then(parse_dt)
+                                                    .or_else(|| item.get("date").and_then(|x| x.as_str()).and_then(parse_dt));
+                                                if let Some(ts) = ts_opt {
+                                                    let mut weights: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+                                                    if let Some(wdict) = item.get("weights").and_then(|x| x.as_object()) {
+                                                        for (k, v) in wdict.iter() {
+                                                            if let Some(f) = v.as_f64() { weights.insert(k.clone(), f); }
+                                                        }
+                                                    }
+                                                    if !weights.is_empty() { snaps.push(crate::portfolio::WeightsAtTime { timestamp: ts, weights }); }
+                                                }
+                                            }
+                                            if !snaps.is_empty() { adapted.weights_over_time = Some(snaps); }
+                                        } else if let Some(exec) = v.get("executed_trades").and_then(|x| x.as_array()) {
+                                            use std::collections::{BTreeMap, HashMap};
+                                            let mut by_ts: BTreeMap<chrono::DateTime<chrono::Utc>, HashMap<String, f64>> = BTreeMap::new();
+                                            for t in exec {
+                                                // Support both timestamp and date
+                                                let ts_dt = t.get("timestamp").and_then(|x| x.as_str()).and_then(parse_dt)
+                                                    .or_else(|| t.get("date").and_then(|x| x.as_str()).and_then(parse_dt))
+                                                    .unwrap_or(start_dt);
+                                                let sym = t.get("symbol").and_then(|x| x.as_str()).unwrap_or("");
+                                                // Try multiple keys for target weight
+                                                let wf = t.get("weight_fraction").and_then(|x| x.as_f64())
+                                                    .or_else(|| t.get("target_weight").and_then(|x| x.as_f64()))
+                                                    .or_else(|| t.get("weight").and_then(|x| x.as_f64()))
+                                                    .or_else(|| t.get("target_allocation").and_then(|x| x.as_f64()))
+                                                    .unwrap_or(f64::NAN);
+                                                if sym.is_empty() || !wf.is_finite() { continue; }
+                                                let e = by_ts.entry(ts_dt).or_default();
+                                                e.insert(sym.to_string(), wf);
+                                            }
+                                            if !by_ts.is_empty() {
+                                                let snaps: Vec<crate::portfolio::WeightsAtTime> = by_ts.into_iter().map(|(ts, weights)| crate::portfolio::WeightsAtTime { timestamp: ts, weights }).collect();
+                                                adapted.weights_over_time = Some(snaps);
+                                            }
+                                        }
+
+                                        p.backtest_results = Some(adapted);
+
+                                        // Executed trades table (optional)
+                                        if let Some(exec) = v.get("executed_trades").and_then(|x| x.as_array()) {
+                                            let mut trades: Vec<crate::portfolio::TradeExecution> = Vec::new();
+                                            for t in exec {
+                                                // Support timestamp/date
+                                                let ts = t.get("timestamp").and_then(|x| x.as_str())
+                                                    .or_else(|| t.get("date").and_then(|x| x.as_str()));
+                                                let ts_dt = ts
+                                                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc)))
+                                                    .unwrap_or(start_dt);
+                                                trades.push(crate::portfolio::TradeExecution {
+                                                    symbol: t.get("symbol").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                                                    action: t.get("action").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                                                    quantity_shares: t.get("quantity_shares").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    // weight field fallbacks
+                                                    weight_fraction: t.get("weight_fraction").and_then(|x| x.as_f64())
+                                                        .or_else(|| t.get("target_weight").and_then(|x| x.as_f64()))
+                                                        .or_else(|| t.get("weight").and_then(|x| x.as_f64()))
+                                                        .or_else(|| t.get("target_allocation").and_then(|x| x.as_f64()))
+                                                        .unwrap_or(0.0),
+                                                    price: t.get("price").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    gross_value: t.get("gross_value").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    commission: t.get("commission").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    slippage: t.get("slippage").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    total_cost: t.get("total_cost").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    net_cash_delta: t.get("net_cash_delta").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                                    timestamp: ts_dt,
+                                                    reason: t.get("reason").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                                                });
+                                            }
+                                            p.backtest_trades = Some(trades);
+                                        } else {
+                                            p.backtest_trades = None;
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    p.data_status = Some(crate::portfolio::DataStatus {
+                                        is_loading: false,
+                                        last_error: Some(format!("Backtest failed: {}", err)),
+                                        data_freshness: std::collections::HashMap::new(),
+                                        provider_status: crate::portfolio::ProviderStatus::Error("backtest".into()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                mem.data.remove::<Vec<(String, Result<serde_json::Value, String>)>>(id);
+            }
+        });
 
         // If selected portfolio exists but no price history present and nothing is fetching,
         // auto-queue all holdings once to populate charts (only when constant_reload is ON).

@@ -57,7 +57,7 @@ class PortfolioResponse(BaseModel):
 
 class StrategyExecuteRequest(BaseModel):
     """Schema for strategy execution requests."""
-    strategy_name: str = Field(..., pattern="^(momentum)$")
+    strategy_name: str = Field(..., pattern="^(momentum|bollinger)$")
     parameters: Dict[str, Any] = Field(default_factory=dict)
     rebalance_frequency: str = Field("monthly", pattern="^(daily|weekly|monthly|quarterly)$")
     risk_tolerance: float = Field(0.1, ge=0.0, le=1.0)
@@ -85,7 +85,7 @@ class StrategyResponse(BaseModel):
 
 class BacktestRequest(BaseModel):
     """Schema for backtest requests."""
-    strategy_name: str = Field(..., pattern="^(momentum)$")
+    strategy_name: str = Field(..., pattern="^(momentum|bollinger)$")
     start_date: datetime
     end_date: datetime
     initial_capital: float = Field(100000.0, gt=0)

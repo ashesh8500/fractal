@@ -10,6 +10,7 @@ use egui::Ui;
 
 pub mod manager;
 pub mod status;
+// Backtesting UI lives under views, but we only import the trait and register in manager.
 
 pub use manager::ComponentManager;
 pub use status::DataProviderStatusComponent;

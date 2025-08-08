@@ -44,6 +44,9 @@ pub struct Portfolio {
     pub backtest_results: Option<BacktestResult>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub backtest_trades: Option<Vec<crate::portfolio::TradeExecution>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy_signals: Option<StrategySignals>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,6 +71,7 @@ impl Portfolio {
             last_updated: Utc::now(),
             price_history: None,
             backtest_results: None,
+            backtest_trades: None,
             strategy_signals: None,
             data_status: None,
         }

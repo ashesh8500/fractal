@@ -3,7 +3,7 @@
 use super::{PortfolioComponent, ComponentCategory, DataProviderStatusComponent};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use crate::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent};
+use crate::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent, BacktestComponent};
 
 pub struct ComponentManager {
     pub components: Vec<Box<dyn PortfolioComponent>>,
@@ -24,6 +24,7 @@ impl ComponentManager {
         manager.register_component(Box::new(ChartsComponent::new()));
         manager.register_component(Box::new(TablesComponent::new()));
         manager.register_component(Box::new(CandlesComponent::new()));
+    manager.register_component(Box::new(BacktestComponent::new()));
         
         manager
     }
@@ -57,14 +58,20 @@ impl ComponentManager {
             if self.window_open.get(idx).copied().unwrap_or(component.is_open()) {
                 let mut open_state = true;
                 egui::Window::new(component.name())
+                    .resizable(true)
+                    .default_size(egui::Vec2::new(800.0, 600.0))
                     .open(&mut open_state)
                     .show(ui.ctx(), |ui_win| {
-                        // Only render if component doesn't require data or portfolio has data
-                        if !component.requires_data() || portfolio.has_data() {
-                            component.render(ui_win, portfolio, config);
-                        } else {
-                            ui_win.weak("No data available for this component.");
-                        }
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui_win, |ui| {
+                                // Only render if component doesn't require data or portfolio has data
+                                if !component.requires_data() || portfolio.has_data() {
+                                    component.render(ui, portfolio, config);
+                                } else {
+                                    ui.weak("No data available for this component.");
+                                }
+                            });
                     });
                 if !open_state {
                     self.window_open[idx] = false;
@@ -117,14 +124,20 @@ impl ComponentManager {
             if self.window_open.get(idx).copied().unwrap_or(component.is_open()) {
                 let mut open_state = true;
                 egui::Window::new(component.name())
+                    .resizable(true)
+                    .default_size(egui::Vec2::new(800.0, 600.0))
                     .open(&mut open_state)
                     .show(ctx, |ui_win| {
-                        // Only render if component doesn't require data or portfolio has data
-                        if !component.requires_data() || portfolio.has_data() {
-                            component.render(ui_win, portfolio, config);
-                        } else {
-                            ui_win.weak("No data available for this component.");
-                        }
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui_win, |ui| {
+                                // Only render if component doesn't require data or portfolio has data
+                                if !component.requires_data() || portfolio.has_data() {
+                                    component.render(ui, portfolio, config);
+                                } else {
+                                    ui.weak("No data available for this component.");
+                                }
+                            });
                     });
                 if !open_state {
                     self.window_open[idx] = false;
