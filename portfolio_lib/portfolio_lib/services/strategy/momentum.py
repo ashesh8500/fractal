@@ -69,7 +69,7 @@ class MomentumStrategy(BaseStrategy):
                 # Not enough data, give a low score
                 momentum_scores[symbol] = -1.0
 
-        # 2. Rank assets by momentum
+    # 2. Rank assets by momentum
         if not momentum_scores:
             self.logger.warning("No momentum scores could be calculated. No trades will be generated.")
             return self._create_empty_result(config)
@@ -103,7 +103,8 @@ class MomentumStrategy(BaseStrategy):
             trades=trades,
             new_weights=target_weights,
             expected_return=0.0,  # Placeholder, could be estimated from historical data
-            confidence=0.8       # Placeholder confidence score
+            confidence=0.8,      # Placeholder confidence score
+            scores=momentum_scores,
         )
 
     def _generate_rebalance_trades(
@@ -151,5 +152,6 @@ class MomentumStrategy(BaseStrategy):
             trades=[],
             new_weights={},
             expected_return=0.0,
-            confidence=0.0
+            confidence=0.0,
+            scores={},
         )

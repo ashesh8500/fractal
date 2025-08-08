@@ -52,8 +52,16 @@ dev = [
 alphavantage = [
     "alpha-vantage>=2.3.0",
 ]
+ui = [
+    "streamlit>=1.31",
+    "plotly>=5.15",
+    "langchain>=0.2",
+    "langchain-openai>=0.1.8",
+    "langchain-community>=0.2",
+    "langchain-litellm>=0.1.7",
+]
 all = [
-    "portfolio-lib[dev,alphavantage]",
+    "portfolio-lib[dev,alphavantage,ui]",
 ]
 
 [project.urls]

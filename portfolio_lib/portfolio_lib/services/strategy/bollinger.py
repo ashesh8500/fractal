@@ -3,8 +3,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from portfolio_lib.models.strategy import StrategyConfig, StrategyResult
-from portfolio_lib.services.backtesting.backtester import Trade, TradeAction
+from portfolio_lib.models.strategy import StrategyConfig, StrategyResult, Trade, TradeAction
 from portfolio_lib.services.strategy import BaseStrategy
 
 
@@ -118,6 +117,7 @@ class BollingerAttractivenessStrategy(BaseStrategy):
             timestamp=datetime.now(timezone.utc),
             confidence=confidence,
             new_weights=blended.to_dict(),
+            scores=combined_scores.to_dict(),
         )
 
     def _extract_closes(
@@ -163,7 +163,8 @@ class BollingerAttractivenessStrategy(BaseStrategy):
             std = series.rolling(window=period).std().iloc[-1]
             upper = sma + num_std * std
             lower = sma - num_std * std
-            price = float(current_prices.get(t, series.iloc[-1]))
+            cp = current_prices.get(t, None)
+            price = float(series.iloc[-1] if cp is None else cp)
             denom = upper - lower
             pb[t] = float((price - lower) / denom) if denom and denom != 0.0 else 0.5
         return pd.Series(pb)

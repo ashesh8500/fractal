@@ -89,6 +89,8 @@ class StrategyResult:
     expected_return: float
     confidence: float
     new_weights: Dict[str, float]  # Recommended new portfolio weights
+    # Optional per-symbol diagnostic scores/signals used to build weights
+    scores: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API serialization."""
@@ -111,6 +113,7 @@ class StrategyResult:
             "expected_return": self.expected_return,
             "confidence": self.confidence,
             "new_weights": self.new_weights,
+            "scores": self.scores,
         }
 
 
@@ -146,6 +149,9 @@ class BacktestResult:
     timestamps: List[datetime] = field(default_factory=list)
     # Executed trades with metadata for plotting/analysis
     executed_trades: List[Dict[str, Any]] = field(default_factory=list)
+    # Holdings per timestamp and optional rebalance details for richer analytics
+    holdings_history: List[Dict[str, float]] = field(default_factory=list)
+    rebalance_details: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API serialization."""

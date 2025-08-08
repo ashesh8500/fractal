@@ -7,7 +7,7 @@ including performance metrics, risk analysis, and comparison to benchmarks.
 
 import logging
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,17 @@ class BacktestingService:
     def __init__(self, data_service: DataService):
         self.data_service = data_service
         self.logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _to_float(val: object) -> float:
+        """Best-effort conversion to float, returns nan on failure."""
+        try:
+            if isinstance(val, (int, float, np.floating)):
+                return float(val)
+            # pandas scalar
+            return float(np.asarray(val).astype(np.float64))
+        except Exception:
+            return float("nan")
 
     def run_backtest(
         self,
@@ -73,11 +84,12 @@ class BacktestingService:
         # Normalize timezone awareness across all price history indices to avoid tz-aware/naive comparison errors
         for symbol, df in list(price_history.items()):
             try:
-                if hasattr(df.index, "tz") and df.index.tz is not None:
-                    price_history[symbol] = df.tz_localize(None)
+                tz_loc = getattr(df, "tz_localize", None)
+                df2 = tz_loc(None) if callable(tz_loc) else df
+                price_history[symbol] = df2  # type: ignore[assignment]
             except Exception:
-                # If normalization fails, keep original to avoid data loss; downstream code has additional guards
-                pass
+                # If not tz-aware or operation unsupported, keep original; downstream code has guards
+                price_history[symbol] = df
 
         # Run the backtest simulation
         simulation_result = self._run_simulation(
@@ -111,9 +123,11 @@ class BacktestingService:
         # Initialize simulation state
         current_holdings = initial_holdings.copy()
         cash = backtest_config.initial_capital
-        portfolio_values = []
-        daily_returns = []
-        timestamps = []
+        portfolio_values: List[float] = []
+        daily_returns: List[float] = []
+        timestamps: List = []
+        holdings_history: List[Dict[str, float]] = []
+        rebalance_details: List[Dict] = []
         total_trades = 0
         winning_trades = 0
         losing_trades = 0
@@ -125,12 +139,22 @@ class BacktestingService:
         for df in price_history.values():
             # Ensure tz-naive for consistent comparisons
             idx = df.index
+            tz_loc = getattr(idx, "tz_localize", None)
             try:
-                if hasattr(idx, "tz") and idx.tz is not None:
-                    idx = idx.tz_localize(None)
+                idx2 = tz_loc(None) if callable(tz_loc) else idx
             except Exception:
-                pass
-            all_dates.update(idx)
+                idx2 = idx
+            try:
+                idx_p = pd.Index(idx2)  # type: ignore[call-arg]
+                for d in idx_p.tolist():
+                    all_dates.add(d)
+            except Exception:
+                # best effort fallback
+                try:
+                    for d in list(idx2):  # type: ignore[arg-type]
+                        all_dates.add(d)
+                except Exception:
+                    pass
 
         simulation_dates = sorted(list(all_dates))
 
@@ -158,14 +182,17 @@ class BacktestingService:
 
         for i, current_date in enumerate(simulation_dates):
             # Get current prices for this date
-            current_prices = {}
+            current_prices: Dict[str, float] = {}
             for symbol, df in price_history.items():
                 if current_date in df.index:
-                    current_prices[symbol] = df.loc[current_date, "close"]
+                    val = df.loc[current_date, "close"]
+                    price_val = self._to_float(val)
+                    if np.isfinite(price_val):
+                        current_prices[symbol] = price_val
 
             # Calculate current portfolio value
             portfolio_value = cash
-            current_weights = {}
+            current_weights: Dict[str, float] = {}
 
             for symbol, shares in current_holdings.items():
                 if symbol in current_prices:
@@ -180,6 +207,7 @@ class BacktestingService:
             # Store portfolio value and calculate daily return
             portfolio_values.append(portfolio_value)
             timestamps.append(current_date)
+            holdings_history.append(dict(current_holdings))
 
             if i > 0:
                 daily_return = (
@@ -195,9 +223,7 @@ class BacktestingService:
                 or (current_date - last_rebalance_date).days >= rebalance_days
             )
 
-            if (
-                should_rebalance and i < len(simulation_dates) - 1
-            ):  # Don't rebalance on last day
+            if should_rebalance and i < len(simulation_dates) - 1:  # Don't rebalance on last day
                 try:
                     # Execute strategy
                     strategy_result = strategy.execute(
@@ -219,6 +245,7 @@ class BacktestingService:
                         backtest_config,
                         portfolio_value,
                         current_date,
+                        getattr(strategy_result, "scores", None),
                     )
 
                     current_holdings = trade_stats["new_holdings"]
@@ -230,6 +257,25 @@ class BacktestingService:
                     # Accumulate executed trade metadata
                     for t in trade_stats.get("executed", []):
                         executed_trades.append(t)
+
+                    # Record rebalance diagnostics
+                    try:
+                        rebalance_details.append(
+                            {
+                                "timestamp": current_date,
+                                "weights": current_weights,
+                                "target_weights": getattr(
+                                    strategy_result, "new_weights", {}
+                                ),
+                                "scores": getattr(strategy_result, "scores", {}),
+                                "trades": [
+                                    t.__dict__ if hasattr(t, "__dict__") else str(t)
+                                    for t in strategy_result.trades
+                                ],
+                            }
+                        )
+                    except Exception:
+                        pass
 
                     last_rebalance_date = current_date
 
@@ -248,6 +294,8 @@ class BacktestingService:
             "losing_trades": losing_trades,
             # Expose executed trades for downstream analytics/plotting
             "executed_trades": executed_trades,
+            "holdings_history": holdings_history,
+            "rebalance_details": rebalance_details,
         }
 
     def _execute_trades(
@@ -259,6 +307,7 @@ class BacktestingService:
         config: BacktestConfig,
         portfolio_value: float,
         trade_date,
+        symbol_scores: Optional[Dict[str, float]] = None,
     ) -> Dict:
         """
         Execute trades and update portfolio state.
@@ -315,6 +364,9 @@ class BacktestingService:
                             "net_cash_delta": float(-total_needed),
                             "timestamp": getattr(trade, "timestamp", None) or trade_date,
                             "reason": getattr(trade, "reason", None),
+                            "score": None
+                            if symbol_scores is None
+                            else float(symbol_scores.get(symbol, np.nan)),
                         }
                     )
 
@@ -345,6 +397,9 @@ class BacktestingService:
                             "net_cash_delta": float(proceeds),
                             "timestamp": getattr(trade, "timestamp", None) or trade_date,
                             "reason": getattr(trade, "reason", None),
+                            "score": None
+                            if symbol_scores is None
+                            else float(symbol_scores.get(symbol, np.nan)),
                         }
                     )
 
@@ -420,17 +475,11 @@ class BacktestingService:
         benchmark_df = price_history[benchmark_symbol]
 
         # Normalize index tz-awareness to tz-naive for safe comparison
-        idx = benchmark_df.index
         try:
-            if hasattr(idx, "tz") and idx.tz is not None:
-                idx = idx.tz_localize(None)
+            benchmark_df = benchmark_df.tz_localize(None)
         except Exception:
+            # If not tz-aware or operation unsupported, leave as-is
             pass
-
-        # Create a view with normalized index if needed
-        if not idx.equals(benchmark_df.index):
-            benchmark_df = benchmark_df.copy()
-            benchmark_df.index = idx
 
         benchmark_prices = benchmark_df["close"]
 
