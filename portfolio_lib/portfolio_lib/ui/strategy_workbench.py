@@ -141,17 +141,63 @@ def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[A
         weights.append(w)
     wdf = pd.concat(weights, axis=1).T
     wdf.index = idx
-    # Pick top contributors by mean weight
+    # Order symbols by mean weight and include all for fidelity
     means = wdf.mean().sort_values(ascending=False)
-    top_cols = list(means.head(8).index)
-    wdf_top = wdf[top_cols].fillna(0.0)
+    ordered_cols = list(means.index)
+    wdf_top = wdf[ordered_cols].fillna(0.0)
+    # Ensure non-negative and bounded weights
+    wdf_top = wdf_top.clip(lower=0.0, upper=1.0)
+    # Compute remainder as Others (should be near zero if all symbols included)
+    others = (1.0 - wdf_top.sum(axis=1)).clip(lower=0.0)
     fig = go.Figure()
-    cum = np.zeros(len(wdf_top))
-    for col in top_cols:
-        y = cum + wdf_top[col].values
-        fig.add_trace(go.Scatter(x=wdf_top.index, y=y, mode="lines", name=col, fill="tonexty" if cum.sum() > 0 else "tozeroy"))
-        cum = y
-    fig.update_layout(title="Portfolio Allocation (Top 8)", xaxis_title="Date", yaxis_title="Weight", yaxis=dict(range=[0,1]))
+    for col in ordered_cols:
+        fig.add_trace(
+            go.Scatter(
+                x=wdf_top.index,
+                y=wdf_top[col].values,
+                mode="lines",
+                name=col,
+                stackgroup="one",
+                groupnorm="fraction",
+            )
+        )
+    if others.notna().any() and (others > 1e-6).any():
+        fig.add_trace(
+            go.Scatter(
+                x=wdf_top.index,
+                y=others.values,
+                mode="lines",
+                name="Others",
+                stackgroup="one",
+                groupnorm="fraction",
+            )
+        )
+    # Add vertical markers at rebalance timestamps if available
+    rb_dates = []
+    try:
+        for d in getattr(res, "rebalance_details", []) or []:
+            ts = d.get("timestamp")
+            if ts is not None:
+                try:
+                    rb_dates.append(pd.to_datetime(ts))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    for rb_date in rb_dates:
+        fig.add_shape(
+            dict(
+                xref="x",
+                yref="paper",
+                x0=rb_date,
+                x1=rb_date,
+                y0=0,
+                y1=1,
+                line_color="#cccccc",
+                line_width=1,
+            )
+        )
+    fig.update_layout(title="Portfolio Allocation", xaxis_title="Date", yaxis_title="Weight", yaxis=dict(range=[0, 1]))
     return fig
 
 
@@ -161,9 +207,24 @@ def _plot_trades(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
     trades = getattr(res, "executed_trades", [])
     if not trades:
         return None
-    # pick first symbol with data or benchmark
-    symbols = list(price_history.keys())
-    sym = symbols[0]
+    # pick the most-traded symbol that has price data
+    df_tr = pd.DataFrame(trades)
+    if "symbol" not in df_tr.columns:
+        return None
+    counts = (
+        df_tr["symbol"].value_counts() if not df_tr.empty else pd.Series(dtype=int)
+    )
+    sym = None
+    for s in counts.index.tolist():
+        if s in price_history and not price_history[s].empty:
+            sym = s
+            break
+    if sym is None:
+        # fallback to any available symbol
+        symbols = [s for s, d in price_history.items() if d is not None and not d.empty]
+        if not symbols:
+            return None
+        sym = symbols[0]
     df = price_history[sym]
     s = df["close"]
     fig = go.Figure()
@@ -298,30 +359,30 @@ def main():
         if user_input and provider != "None":
             st.session_state.chat.append({"role": "user", "content": user_input})
 
-                        # Build a system prompt to constrain output
+            # Build a system prompt to constrain output
             sys_prompt = textwrap.dedent(
                 """
-                                You are an expert quant Python assistant.
-                                Workflow for each user request:
-                                1) Respond briefly confirming your understanding of the strategy request.
-                                2) Preview the approach at a high level (signals, weighting, constraints).
-                                3) Then output a SINGLE JSON object to call a tool to register the strategy file. The JSON must be the last line only.
+                You are an expert quant Python assistant.
+                Workflow for each user request:
+                1) Respond briefly confirming your understanding of the strategy request.
+                2) Preview the approach at a high level (signals, weighting, constraints).
+                3) Then output a SINGLE JSON object to call a tool to register the strategy file. The JSON must be the last line only.
 
-                                Tool spec (emit exactly this JSON shape when ready to register):
-                                {
-                                    "tool": "register_strategy",
-                                    "class_name": "<ClassName>",
-                                    "strategy_name": "<short_name>",
-                                    "code": "<FULL PYTHON SOURCE CODE>"
-                                }
+                Tool spec (emit exactly this JSON shape when ready to register):
+                {
+                    "tool": "register_strategy",
+                    "class_name": "<ClassName>",
+                    "strategy_name": "<short_name>",
+                    "code": "<FULL PYTHON SOURCE CODE>"
+                }
 
-                                Code Requirements:
-                                - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
-                                - Constructor: super().__init__("<short_name>")
-                                - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
-                                - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
-                                - No external I/O, no network calls.
-                                - Compute must be simple and fast.
+                Code Requirements:
+                - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
+                - Constructor: super().__init__("<short_name>")
+                - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
+                - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
+                - No external I/O, no network calls.
+                - Compute must be simple and fast.
                 """
             ).strip()
 
@@ -396,20 +457,6 @@ def main():
                 except Exception as e:
                     st.error(f"Failed to load chat: {e}")
 
-    # Manual fallback: Create file from last assistant message
-        if st.button("Create Strategy from Last Code"):
-            code_msgs = [m for m in reversed(st.session_state.chat) if m["role"] == "assistant"]
-            if not code_msgs:
-                st.error("No assistant code to save.")
-            else:
-                code = code_msgs[0]["content"].strip()
-                class_name = st.text_input("Class Name", value="ChatAuthoredStrategy", key="clsname")
-                if class_name:
-                    try:
-                        mod_path, cls = write_new_strategy(class_name, class_name, source=code)
-                        st.success(f"Wrote {mod_path}:{cls}")
-                    except Exception as e:
-                        st.error(str(e))
 
     with tab_backtest:
         st.subheader("Validate / Load & Backtest")

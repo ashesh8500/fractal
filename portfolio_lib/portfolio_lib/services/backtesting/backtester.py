@@ -122,7 +122,7 @@ class BacktestingService:
 
         # Initialize simulation state
         current_holdings = initial_holdings.copy()
-        cash = backtest_config.initial_capital
+        cash = 0.0  # will be computed after dates are aligned
         portfolio_values: List[float] = []
         daily_returns: List[float] = []
         timestamps: List = []
@@ -172,7 +172,22 @@ class BacktestingService:
         if len(simulation_dates) < 2:
             raise ValueError("Insufficient data for backtesting period")
 
-        prev_portfolio_value = backtest_config.initial_capital
+        # Compute initial cash by valuing initial_holdings at the first simulation date
+        # so that total initial portfolio value matches initial_capital best-effort
+        first_date = simulation_dates[0]
+        initial_value = 0.0
+        for symbol, shares in current_holdings.items():
+            df = price_history.get(symbol)
+            if df is not None and not df.empty and first_date in df.index:
+                try:
+                    px = self._to_float(df.loc[first_date, "close"])  # type: ignore[index]
+                    if np.isfinite(px):
+                        initial_value += float(shares) * float(px)
+                except Exception:
+                    pass
+        cash = max(float(backtest_config.initial_capital) - float(initial_value), 0.0)
+
+        prev_portfolio_value = float(backtest_config.initial_capital)
 
         # Rebalancing frequency settings
         rebalance_days = self._get_rebalance_frequency_days(
@@ -191,16 +206,20 @@ class BacktestingService:
                         current_prices[symbol] = price_val
 
             # Calculate current portfolio value
-            portfolio_value = cash
-            current_weights: Dict[str, float] = {}
-
+            # Compute invested value separately to avoid cash diluting asset weights
+            invested_total = 0.0
+            position_values: Dict[str, float] = {}
             for symbol, shares in current_holdings.items():
                 if symbol in current_prices:
-                    position_value = shares * current_prices[symbol]
-                    portfolio_value += position_value
-                    current_weights[symbol] = position_value / max(
-                        portfolio_value, 1e-10
-                    )
+                    pv = float(shares) * float(current_prices[symbol])
+                    position_values[symbol] = pv
+                    invested_total += pv
+            portfolio_value = cash + invested_total
+
+            current_weights: Dict[str, float] = {}
+            for symbol in current_holdings.keys():
+                if invested_total > 0 and symbol in position_values:
+                    current_weights[symbol] = position_values[symbol] / invested_total
                 else:
                     current_weights[symbol] = 0.0
 
@@ -258,20 +277,65 @@ class BacktestingService:
                     for t in trade_stats.get("executed", []):
                         executed_trades.append(t)
 
-                    # Record rebalance diagnostics
+                    # Record rebalance diagnostics with JSON-friendly values
                     try:
+                        def _iso(ts_obj):
+                            try:
+                                return pd.to_datetime(ts_obj).to_pydatetime().isoformat()
+                            except Exception:
+                                try:
+                                    return str(ts_obj)
+                                except Exception:
+                                    return None
+
+                        def _float_map(m):
+                            out = {}
+                            for k, v in (m or {}).items():
+                                try:
+                                    out[str(k)] = float(v)
+                                except Exception:
+                                    try:
+                                        out[str(k)] = self._to_float(v)
+                                    except Exception:
+                                        pass
+                            return out
+
+                        def _serialize_trade(t):
+                            try:
+                                sym = getattr(t, "symbol", None)
+                                act = getattr(t, "action", None)
+                                qty = getattr(t, "quantity", None)
+                                price = getattr(t, "price", None)
+                                ts = getattr(t, "timestamp", None) or current_date
+                                reason = getattr(t, "reason", None)
+                                if act is None:
+                                    act_str = None
+                                else:
+                                    act_val = getattr(act, "value", None)
+                                    if isinstance(act_val, str):
+                                        act_str = act_val
+                                    elif hasattr(act, "value"):
+                                        act_str = str(getattr(act, "value"))
+                                    else:
+                                        act_str = str(act)
+                                return {
+                                    "symbol": None if sym is None else str(sym),
+                                    "action": act_str,
+                                    "quantity": None if qty is None else float(qty),
+                                    "price": None if price is None else float(price),
+                                    "timestamp": _iso(ts),
+                                    "reason": None if reason is None else str(reason),
+                                }
+                            except Exception:
+                                return {"trade": str(t)}
+
                         rebalance_details.append(
                             {
-                                "timestamp": current_date,
-                                "weights": current_weights,
-                                "target_weights": getattr(
-                                    strategy_result, "new_weights", {}
-                                ),
-                                "scores": getattr(strategy_result, "scores", {}),
-                                "trades": [
-                                    t.__dict__ if hasattr(t, "__dict__") else str(t)
-                                    for t in strategy_result.trades
-                                ],
+                                "timestamp": _iso(current_date),
+                                "weights": _float_map(current_weights),
+                                "target_weights": _float_map(getattr(strategy_result, "new_weights", {})),
+                                "scores": _float_map(getattr(strategy_result, "scores", {})),
+                                "trades": [_serialize_trade(t) for t in getattr(strategy_result, "trades", [])],
                             }
                         )
                     except Exception:
