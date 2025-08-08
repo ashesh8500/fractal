@@ -7,7 +7,13 @@ from datetime import UTC as DATETIME_UTC
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+import os
+import secrets
+import hashlib
+import base64
+import time
+
+from fastapi import APIRouter, HTTPException, Query, Header, status, Depends
 
 from .core.result import ErrorType
 from .schemas import (
@@ -15,10 +21,68 @@ from .schemas import (
     DataProvider,
     MarketDataRequest,
     PortfolioCreate,
+    PortfolioUpdate,
     PortfolioResponse,
     StrategyExecuteRequest,
+    # auth schemas
+    UserCreate,
+    UserResponse,
+    UserUpdate,
+    LoginRequest,
+    LoginResponse,
+    TokenData,
+    GoogleLoginRequest,
 )
 from .services import portfolio_service
+
+# Storage helpers for user persistence
+from .storage import (
+    list_users_public,
+    create_user as storage_create_user,
+    get_user_internal,
+    get_user_public,
+    update_user as storage_update_user,
+    delete_user as storage_delete_user,
+)
+
+# Password hashing and JWT
+try:
+    from passlib.context import CryptContext
+except Exception:
+    CryptContext = None
+
+try:
+    from jose import jwt, JWTError
+except Exception:
+    jwt = None
+    JWTError = Exception
+
+# Google ID token verification (optional, used if available)
+try:
+    from google.oauth2 import id_token as google_id_token  # type: ignore
+    from google.auth.transport import requests as google_requests  # type: ignore
+except Exception:
+    google_id_token = None  # type: ignore
+    google_requests = None  # type: ignore
+
+# Simple in-memory store for OAuth login sessions: state -> { verifier, done, token?, username? }
+_OAUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+# Config for JWT
+SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+def _init_pwd_context():
+    if CryptContext is None:
+        return None
+    try:
+        return CryptContext(schemes=["bcrypt"], deprecated="auto")
+    except Exception:
+        # Fallback: disable hashing if bcrypt backend is broken in local env
+        return None
+
+pwd_context = _init_pwd_context()
 
 # In accordance with the Architecture Plan, the backend is a thin orchestration
 # layer over the portfolio_lib. For historical prices, we expose a dedicated
@@ -116,6 +180,112 @@ class LocalYFinanceFallback:
 api_router = APIRouter(prefix="/api/v1", tags=["portfolio"])
 
 
+# -----------------------
+# Auth helpers (JWT)
+# -----------------------
+def _verify_password(plain: str, hashed: str) -> bool:
+    if pwd_context is not None:
+        try:
+            return pwd_context.verify(plain, hashed)
+        except Exception:
+            return False
+    # Fallback (insecure): direct compare
+    return plain == hashed
+
+
+def _get_password_hash(password: str) -> str:
+    if pwd_context is not None:
+        return pwd_context.hash(password)
+    # Fallback (insecure): store plaintext (NOT RECOMMENDED for production)
+    return password
+
+
+def _create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+    """Create a signed JWT if jose is available, otherwise return a simple token."""
+    to_encode = data.copy()
+    if expires_delta is None:
+        expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.utcnow() + expires_delta
+    to_encode.update({"exp": int(expire.timestamp())})
+    if jwt is not None:
+        try:
+            return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        except Exception:
+            pass
+    # Fallback token format (unsigned) -- useful for local demo
+    return f"demo-token:{to_encode.get('username','')}:admin={to_encode.get('is_admin', False)}:exp={int(expire.timestamp())}"
+
+
+def _decode_access_token(token: str) -> TokenData:
+    """Decode access token and return TokenData.
+    Order of attempts:
+      1) Verify as Google ID token if google-auth is installed (preferred minimal OAuth path)
+      2) Verify as local JWT signed with SECRET_KEY (legacy)
+      3) Fallback to demo-token parsing (local/dev only)
+    """
+    # 1) Google ID token path
+    if google_id_token is not None and google_requests is not None:
+        try:
+            request = google_requests.Request()
+            audience = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+            payload = google_id_token.verify_oauth2_token(token, request, audience)
+            # Extract email as username
+            username = payload.get("email") or payload.get("sub")
+            if not username:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token payload")
+            # Minimal: no admin concept with Google OAuth
+            return TokenData(username=username, is_admin=False)
+        except Exception:
+            # fall through to other methods
+            pass
+
+    # 2) Legacy local JWT
+    if jwt is not None:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            username = payload.get("username")
+            is_admin = payload.get("is_admin", False)
+            return TokenData(username=username, is_admin=is_admin)
+        except JWTError:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token decode error")
+    # Fallback parsing for demo-token format
+    try:
+        if token.startswith("demo-token:"):
+            parts = token.split(":")
+            username = parts[1] if len(parts) > 1 else None
+            is_admin = "admin=True" in token or "admin=true" in token.lower()
+            return TokenData(username=username, is_admin=is_admin)
+    except Exception:
+        pass
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+
+def _get_token_from_header(authorization: Optional[str]) -> str:
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
+
+
+async def get_current_token_data(authorization: Optional[str] = Header(None)) -> TokenData:
+    token = _get_token_from_header(authorization)
+    return _decode_access_token(token)
+
+
+def require_admin(token_data: TokenData):
+    if not token_data.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
+
+
+def require_same_user_or_admin(target_username: str, token_data: TokenData):
+    if token_data.username != target_username and not token_data.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+
 def handle_result(result, success_status: int = 200):
     """Convert Result monad to FastAPI response."""
     if result.is_ok():
@@ -143,6 +313,294 @@ async def create_portfolio(
     return handle_result(result, 201)
 
 
+# -----------------------
+# User management endpoints
+# -----------------------
+@api_router.post("/users", response_model=UserResponse, status_code=201)
+async def create_user(user: UserCreate, authorization: Optional[str] = Header(None)):
+    """
+    Create a new user. If no users exist yet, allow creation of the first user (bootstrap).
+    Otherwise the caller must be an admin (provide Bearer token).
+    Password is hashed before storage.
+    """
+    # Normalize username
+    username = user.username.strip().lower()
+
+    # Check if any users exist - bootstrap logic
+    existing = list_users_public()
+    if existing:
+        # Require admin
+        token_data = await get_current_token_data(authorization)
+        require_admin(token_data)
+
+    try:
+        password_hash = _get_password_hash(user.password)
+        created = storage_create_user(username, password_hash, is_admin=user.is_admin)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {exc}")
+
+    return created
+
+
+@api_router.get("/users", response_model=List[UserResponse])
+async def list_users(token_data: TokenData = Depends(get_current_token_data)):
+    """List all users (admin only)."""
+    require_admin(token_data)
+    rows = list_users_public()
+    return rows
+
+
+@api_router.get("/users/{username}", response_model=UserResponse)
+async def get_user(username: str, token_data: TokenData = Depends(get_current_token_data)):
+    """Get public user info. Allowed for same user or admin."""
+    require_same_user_or_admin(username, token_data)
+    public = get_user_public(username)
+    if public is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return public
+
+
+@api_router.put("/users/{username}", response_model=UserResponse)
+async def update_user(username: str, payload: UserUpdate, token_data: TokenData = Depends(get_current_token_data)):
+    """Update user password or admin flag. Only same user or admin may update."""
+    require_same_user_or_admin(username, token_data)
+
+    password_hash = None
+    if payload.password:
+        password_hash = _get_password_hash(payload.password)
+
+    try:
+        updated = storage_update_user(username, password_hash=password_hash, is_admin=payload.is_admin)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update user: {exc}")
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return updated
+
+
+@api_router.delete("/users/{username}")
+async def delete_user(username: str, token_data: TokenData = Depends(get_current_token_data)):
+    """Delete a user. Admins can delete any user; users can delete their own account."""
+    require_same_user_or_admin(username, token_data)
+    ok = storage_delete_user(username)
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "deleted", "username": username}
+
+
+# -----------------------
+# Authentication endpoints
+# -----------------------
+@api_router.post("/auth/login", response_model=LoginResponse)
+async def login(creds: LoginRequest):
+    """Authenticate and return an access token (JWT)."""
+    username = creds.username.strip().lower()
+    internal = get_user_internal(username)
+    if internal is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    stored_hash = internal.get("password_hash")
+    if not _verify_password(creds.password, str(stored_hash)):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token_data = {"username": username, "is_admin": bool(internal.get("is_admin", False))}
+    access_token = _create_access_token(token_data)
+    return {"access_token": access_token, "token_type": "bearer", "username": username}
+
+
+@api_router.post("/auth/google", response_model=LoginResponse)
+async def login_with_google(payload: GoogleLoginRequest):
+    """Accept a Google ID token, verify it server-side, and return a bearer token.
+    If google-auth isn't installed, this will return 501.
+    """
+    if google_id_token is None or google_requests is None:
+        raise HTTPException(status_code=501, detail="Google auth not available on server")
+
+    try:
+        req = google_requests.Request()
+        audience = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+        info = google_id_token.verify_oauth2_token(payload.id_token, req, audience)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid Google ID token: {exc}")
+
+    username = (info.get("email") or info.get("sub") or "").strip().lower()
+    if not username:
+        raise HTTPException(status_code=400, detail="Google token missing email/sub")
+
+    # Upsert a user record for visibility; password is irrelevant with OAuth.
+    # If user doesn't exist, create with a random placeholder hash.
+    internal = get_user_internal(username)
+    if internal is None:
+        try:
+            placeholder = _get_password_hash(os.urandom(16).hex())
+            storage_create_user(username, placeholder, is_admin=False)
+        except Exception:
+            # best-effort; continue even if user table is unavailable
+            pass
+
+    # Return a local access token that encodes username (and non-admin).
+    access_token = _create_access_token({"username": username, "is_admin": False})
+    return {"access_token": access_token, "token_type": "bearer", "username": username}
+
+
+# -----------------------
+# Google OAuth (Auth Code + PKCE) flow for native app redirect
+# -----------------------
+@api_router.post("/auth/google/start")
+async def google_oauth_start():
+    """Start Google OAuth Authorization Code with PKCE. Returns the URL and state.
+    Frontend should open this URL in the user's browser and then poll /auth/google/status.
+    """
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    redirect_uri = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "http://127.0.0.1:8000/api/v1/auth/google/callback")
+    if not client_id:
+        raise HTTPException(status_code=500, detail="GOOGLE_OAUTH_CLIENT_ID not configured")
+    if not client_secret:
+        # For PKCE, confidential client is still commonly used in server; warn if missing
+        pass
+
+    # Create state and PKCE verifier/challenge
+    state = secrets.token_urlsafe(24)
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+    # Store session (expires in 10 minutes)
+    _OAUTH_SESSIONS[state] = {
+        "verifier": verifier,
+        "created": int(time.time()),
+        "done": False,
+    }
+
+    scope = "openid email profile"
+    enc_redirect = auth_urlencode(redirect_uri)
+    auth_url = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={client_id}"
+        f"&redirect_uri={enc_redirect}"
+        "&response_type=code"
+        f"&scope={auth_urlencode(scope)}"
+        "&access_type=offline"
+        "&include_granted_scopes=true"
+        f"&state={state}"
+        "&prompt=consent"
+        f"&code_challenge={challenge}"
+        "&code_challenge_method=S256"
+    )
+
+    return {"auth_url": auth_url, "state": state}
+
+
+def auth_urlencode(s: str) -> str:
+    try:
+        from urllib.parse import quote_plus
+
+        return quote_plus(s)
+    except Exception:
+        return s.replace(" ", "+")
+
+
+@api_router.get("/auth/google/callback")
+async def google_oauth_callback(code: str, state: str):
+    """Google redirects here after login. Exchange code for tokens, create app token, mark session done."""
+    sess = _OAUTH_SESSIONS.get(state)
+    if not sess:
+        raise HTTPException(status_code=400, detail="Invalid or expired state")
+
+    # Basic expiry (10 min)
+    if int(time.time()) - int(sess.get("created", 0)) > 600:
+        _OAUTH_SESSIONS.pop(state, None)
+        raise HTTPException(status_code=400, detail="Login session expired")
+
+    verifier = sess.get("verifier")
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    redirect_uri = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "http://127.0.0.1:8000/api/v1/auth/google/callback")
+
+    if not client_id:
+        raise HTTPException(status_code=500, detail="GOOGLE_OAUTH_CLIENT_ID not configured")
+
+    # Exchange code -> tokens
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code_verifier": verifier,
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+
+    try:
+        import requests  # type: ignore
+
+        resp = requests.post(token_url, data=data, timeout=10)
+        if not resp.ok:
+            detail = resp.text
+            raise HTTPException(status_code=401, detail=f"Token exchange failed: {detail}")
+        payload = resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Token exchange error: {exc}")
+
+    id_tok = payload.get("id_token")
+    if not id_tok:
+        raise HTTPException(status_code=401, detail="No id_token returned")
+
+    # Verify id token
+    username = None
+    if google_id_token is not None and google_requests is not None:
+        try:
+            req = google_requests.Request()
+            info = google_id_token.verify_oauth2_token(id_tok, req, client_id)
+            username = (info.get("email") or info.get("sub") or "").strip().lower()
+        except Exception:
+            pass
+    if not username:
+        # Fallback best-effort: accept token but don't verify (dev only)
+        username = "user"
+
+    # Upsert user and create app access token
+    internal = get_user_internal(username)
+    if internal is None:
+        try:
+            placeholder = _get_password_hash(os.urandom(16).hex())
+            storage_create_user(username, placeholder, is_admin=False)
+        except Exception:
+            pass
+
+    access_token = _create_access_token({"username": username, "is_admin": False})
+    sess.update({"done": True, "access_token": access_token, "username": username})
+    _OAUTH_SESSIONS[state] = sess
+
+    # Return a simple HTML page to let user close the browser
+    return (
+        "<html><body><h3>Login successful. You can return to the app.</h3>"
+        "<p>You may close this window now.</p></body></html>"
+    )
+
+
+@api_router.get("/auth/google/status", response_model=LoginResponse, responses={202: {"description": "Pending"}})
+async def google_oauth_status(state: str):
+    sess = _OAUTH_SESSIONS.get(state)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Invalid state")
+    if not sess.get("done"):
+        # Pending
+        raise HTTPException(status_code=202, detail="Pending")
+    return {
+        "access_token": sess.get("access_token"),
+        "token_type": "bearer",
+        "username": sess.get("username"),
+    }
+
+
 @api_router.get("/portfolios", response_model=List[PortfolioResponse])
 async def list_portfolios():
     """List all portfolios."""
@@ -154,6 +612,20 @@ async def list_portfolios():
 async def get_portfolio(portfolio_name: str):
     """Get a specific portfolio."""
     result = portfolio_service.get_portfolio(portfolio_name)
+    return handle_result(result)
+
+
+@api_router.put("/portfolios/{portfolio_name}", response_model=PortfolioResponse)
+async def update_portfolio(portfolio_name: str, payload: PortfolioUpdate):
+    """Update a portfolio's holdings."""
+    result = portfolio_service.update_portfolio(portfolio_name, payload.holdings)
+    return handle_result(result)
+
+
+@api_router.delete("/portfolios/{portfolio_name}")
+async def delete_portfolio(portfolio_name: str):
+    """Delete a portfolio."""
+    result = portfolio_service.delete_portfolio(portfolio_name)
     return handle_result(result)
 
 

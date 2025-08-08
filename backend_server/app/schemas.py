@@ -3,7 +3,7 @@ Pydantic schemas for API request/response validation.
 Lean, functional design with clear data flow.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from enum import Enum
@@ -14,7 +14,7 @@ class PortfolioCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     holdings: Dict[str, float] = Field(..., min_items=1)
     
-    @validator('holdings')
+    @field_validator('holdings')
     def validate_holdings(cls, v):
         for symbol, shares in v.items():
             if not symbol.strip():
@@ -55,6 +55,20 @@ class PortfolioResponse(BaseModel):
         from_attributes = True
 
 
+class PortfolioUpdate(BaseModel):
+    """Schema for updating portfolio holdings."""
+    holdings: Dict[str, float]
+    
+    @field_validator('holdings')
+    def validate_holdings(cls, v):
+        for symbol, shares in v.items():
+            if not symbol.strip():
+                raise ValueError("Symbol cannot be empty")
+            if shares <= 0:
+                raise ValueError(f"Shares for {symbol} must be positive")
+        return v
+
+
 class StrategyExecuteRequest(BaseModel):
     """Schema for strategy execution requests."""
     strategy_name: str = Field(..., pattern="^(momentum|bollinger)$")
@@ -93,11 +107,11 @@ class BacktestRequest(BaseModel):
     slippage: float = Field(0.0005, ge=0.0, le=0.1)
     benchmark: str = Field("SPY")
     
-    @validator('end_date')
-    def validate_date_range(cls, v, values):
-        if 'start_date' in values and v <= values['start_date']:
+    @model_validator(mode='after')
+    def validate_date_range(self):
+        if self.end_date <= self.start_date:
             raise ValueError("End date must be after start date")
-        return v
+        return self
 
 
 class BacktestResponse(BaseModel):
@@ -134,7 +148,7 @@ class MarketDataRequest(BaseModel):
     symbols: List[str] = Field(..., min_items=1, max_items=20)
     provider: DataProvider = DataProvider.YFINANCE
     
-    @validator('symbols')
+    @field_validator('symbols')
     def validate_symbols(cls, v):
         for symbol in v:
             if not symbol.strip():
@@ -155,3 +169,57 @@ class MarketDataResponse(BaseModel):
     timestamp: datetime
     provider: str
     data: List[PriceData]
+
+
+# --------------------
+# User / Auth schemas
+# --------------------
+class UserCreate(BaseModel):
+    """Schema for creating a new user."""
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6)
+    is_admin: bool = False
+
+    @field_validator('username')
+    def normalize_username(cls, v):
+        return v.strip().lower()
+
+
+class UserResponse(BaseModel):
+    """Public user response (never includes password)."""
+    username: str
+    is_admin: bool = False
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UserUpdate(BaseModel):
+    """Fields that can be updated for a user."""
+    password: Optional[str] = None
+    is_admin: Optional[bool] = None
+
+
+class LoginRequest(BaseModel):
+    """Login payload."""
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """Response for successful login."""
+    access_token: str
+    token_type: str = "bearer"
+    username: Optional[str] = None
+
+
+class GoogleLoginRequest(BaseModel):
+    """Request payload containing a Google ID token to be verified by the backend."""
+    id_token: str
+
+
+class TokenData(BaseModel):
+    """Parsed token data (used internally)."""
+    username: Optional[str] = None
+    is_admin: Optional[bool] = False

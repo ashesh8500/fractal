@@ -3,28 +3,33 @@ Service layer for portfolio operations.
 Uses functional programming and Result monad for clean error handling.
 """
 
+from typing import Dict, Any
+from datetime import datetime
+import traceback
+from .core.result import Result, AppError, ErrorType, AppResult, safe_call, validate
+from .schemas import (
+    PortfolioCreate, PortfolioResponse, StrategyExecuteRequest, 
+    BacktestRequest, MarketDataRequest, DataProvider
+)
+from .storage import (
+    init_db,
+    upsert_portfolio,
+    get_portfolio as db_get_portfolio,
+    list_portfolios as db_list_portfolios,
+    delete_portfolio as db_delete_portfolio,
+)
+
+# Ensure portfolio_lib is importable
 import sys
 import os
-
-# Add portfolio_lib to Python path
 portfolio_lib_path = os.path.join(os.path.dirname(__file__), '../../portfolio_lib')
 if portfolio_lib_path not in sys.path:
     sys.path.insert(0, portfolio_lib_path)
-
-from typing import Dict, Any
-from datetime import datetime
 
 from portfolio_lib.models.portfolio import Portfolio
 from portfolio_lib.models.strategy import StrategyConfig, BacktestConfig
 from portfolio_lib.services.data.yfinance import YFinanceDataService
 from portfolio_lib.services.data.alphavantage import AlphaVantageDataService
-
-from .core.result import Result, AppError, ErrorType, AppResult, safe_call, validate
-import traceback
-from .schemas import (
-    PortfolioCreate, PortfolioResponse, StrategyExecuteRequest, 
-    BacktestRequest, MarketDataRequest, DataProvider
-)
 
 
 class PortfolioService:
@@ -36,6 +41,11 @@ class PortfolioService:
             DataProvider.YFINANCE: YFinanceDataService(),
             # DataProvider.ALPHAVANTAGE: AlphaVantageDataService(api_key="demo")  # Commented out for now
         }
+        # Initialize persistent storage
+        try:
+            init_db()
+        except Exception:
+            pass
     
     def create_portfolio(self, data: PortfolioCreate, provider: DataProvider = DataProvider.YFINANCE) -> AppResult[PortfolioResponse]:
         """Create a new portfolio."""
@@ -45,21 +55,67 @@ class PortfolioService:
             # Refresh market data post-create to initialize total_value/weights
             .and_then(lambda p: safe_call(lambda: (p.refresh_data(), p)[1]))
             .map(self._store_portfolio)
+            .map(lambda p: (upsert_portfolio(p.name, p.holdings), p)[1])
             .map(self._portfolio_to_response)
         )
     
     def get_portfolio(self, name: str) -> AppResult[PortfolioResponse]:
         """Get a portfolio by name."""
-        return (
-            self._find_portfolio(name)
-            .map(self._portfolio_to_response)
-        )
+        # If not in memory, try loading from DB and hydrate
+        if name not in self._portfolios:
+            db_row = db_get_portfolio(name)
+            if db_row is not None:
+                holdings = db_row.get("holdings", {})
+                self._portfolios[name] = Portfolio(name=name, holdings=holdings, data_service=self._data_services[DataProvider.YFINANCE])
+        return (self._find_portfolio(name).map(self._portfolio_to_response))
     
     def list_portfolios(self) -> AppResult[list[PortfolioResponse]]:
         """List all portfolios."""
-        return safe_call(
-            lambda: [self._portfolio_to_response(p) for p in self._portfolios.values()]
-        )
+        def _list():
+            # Merge in DB ones not yet loaded
+            db_rows = db_list_portfolios()
+            for row in db_rows:
+                n = row.get("name")
+                if n and n not in self._portfolios:
+                    holdings = row.get("holdings", {})
+                    try:
+                        self._portfolios[n] = Portfolio(name=n, holdings=holdings, data_service=self._data_services[DataProvider.YFINANCE])
+                    except Exception:
+                        continue
+            return [self._portfolio_to_response(p) for p in self._portfolios.values()]
+        return safe_call(_list)
+
+    def update_portfolio(self, name: str, holdings: Dict[str, float]) -> AppResult[PortfolioResponse]:
+        """Update a portfolio's holdings and persist to DB."""
+        def _update() -> PortfolioResponse:
+            # Update in-memory if exists, else create a new in-memory instance
+            if name in self._portfolios:
+                p = self._portfolios[name]
+                p.holdings = holdings
+                # Refresh derived values
+                try:
+                    p.refresh_data()
+                except Exception:
+                    pass
+            else:
+                p = Portfolio(name=name, holdings=holdings, data_service=self._data_services[DataProvider.YFINANCE])
+                try:
+                    p.refresh_data()
+                except Exception:
+                    pass
+                self._portfolios[name] = p
+            # Persist
+            upsert_portfolio(name, holdings)
+            return self._portfolio_to_response(self._portfolios[name])
+        return safe_call(_update)
+
+    def delete_portfolio(self, name: str) -> AppResult[Dict[str, Any]]:
+        """Delete a portfolio from memory and DB."""
+        self._portfolios.pop(name, None)
+        ok = db_delete_portfolio(name)
+        if not ok:
+            return Result.err(AppError(ErrorType.NOT_FOUND, f"Portfolio '{name}' not found"))
+        return Result.ok({"status": "deleted", "name": name})
     
     def execute_strategy(self, portfolio_name: str, request: StrategyExecuteRequest) -> AppResult[Any]:
         """Execute a strategy on a portfolio."""

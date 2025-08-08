@@ -24,6 +24,10 @@ pub struct Config {
     // Native provider support
     pub use_native_provider: bool,
     pub alphavantage_api_key: Option<String>,
+
+    // Persisted authentication token (JWT) and current user
+    pub auth_token: Option<String>,
+    pub current_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,8 +61,11 @@ impl Default for Config {
             refresh_interval_seconds: 300, // 5 minutes
             chart_theme: ChartTheme::Auto,
             // Defaults for native mode (enabled for testing)
-            use_native_provider: true,
+            use_native_provider: false,
             alphavantage_api_key: std::env::var("ALPHAVANTAGE_API_KEY").ok(),
+            // Auth defaults
+            auth_token: None,
+            current_user: None,
         }
     }
 }
@@ -109,4 +116,5 @@ impl AppState {
             .map(|p| !p.is_empty())
             .unwrap_or(false)
     }
+
 }

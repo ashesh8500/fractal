@@ -29,6 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1.0"
 urlencoding = "2.1"
 rand = "0.8"
+getrandom = { version = "0.2", features = ["js"] }
 futures = "0.3.30"
 
 # native:
@@ -36,13 +37,17 @@ futures = "0.3.30"
 env_logger = "0.11.8"
 reqwest = { version = "0.11", features = ["json"] }
 tokio = { version = "1.39.2", features = ["full"] }
+dotenvy = "0.15"
+opener = "0.7"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.50"
 web-sys = "0.3.70"
 reqwest = { version = "0.11", features = ["json", "wasm-streams"] }
-tokio = { version = "1.39.2", features = ["macros", "rt"] }
+tokio = { version = "1.39.2", features = ["macros", "rt", "time"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 [profile.release]
 opt-level = 2

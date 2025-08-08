@@ -43,6 +43,28 @@ pub struct TemplateApp {
     // Small demo toggles inspired by egui demo windows
     show_status_window: bool,
 
+    // Login / Users windows
+    #[serde(skip)]
+    show_login_window: bool,
+    #[serde(skip)]
+    show_users_window: bool,
+
+    // Authentication / Users state (frontend-only)
+    #[serde(skip)]
+    login_username: String,
+    #[serde(skip)]
+    login_password: String,
+    #[serde(skip)]
+    auth_token: Option<String>,
+    #[serde(skip)]
+    users: Vec<String>,
+    #[serde(skip)]
+    new_user_username: String,
+    #[serde(skip)]
+    new_user_password: String,
+    #[serde(skip)]
+    new_user_is_admin: bool,
+
     // Symbols queued to fetch price history for (drives frontend fetching)
     #[serde(skip)]
     fetch_queue: Arc<Mutex<Vec<String>>>,
@@ -110,6 +132,18 @@ impl Default for TemplateApp {
             test_message: "Not tested yet".to_string(),
             async_state: Arc::new(Mutex::new(AsyncState::default())),
             show_status_window: false,
+            show_login_window: false,
+            show_users_window: false,
+
+            // Authentication / Users frontend defaults
+            login_username: String::new(),
+            login_password: String::new(),
+            auth_token: None,
+            users: Vec::new(),
+            new_user_username: String::new(),
+            new_user_password: String::new(),
+            new_user_is_admin: false,
+
             fetch_queue: Arc::new(Mutex::new(Vec::new())),
             // keep left panel tame by default (shows first N items and a "show more" toggle)
             panel_render_limit: 30,
@@ -142,7 +176,11 @@ impl TemplateApp {
         };
 
         // Initialize non-serializable components
-        let use_native = app.app_state.config.use_native_provider;
+    // In web builds, force server mode (native provider is unavailable in WASM)
+    #[cfg(target_arch = "wasm32")]
+    let use_native = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let use_native = app.app_state.config.use_native_provider;
         let key = app.app_state.config.alphavantage_api_key.clone();
         app.api_client =
             ApiClient::new(&app.app_state.config.api_base_url).with_native(use_native, key);
@@ -152,15 +190,35 @@ impl TemplateApp {
         // fetch_queue is not an Option; it is always present. Ensure it is.
         app.fetch_queue = Arc::new(Mutex::new(Vec::new()));
 
-        // Create Tokio runtime in a background thread
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let handle = rt.handle().clone();
-        std::thread::spawn(move || {
-            rt.block_on(async {
-                futures::future::pending::<()>().await; // Keeps runtime alive indefinitely
+        // If we have a persisted auth token, set it on the ApiClient immediately
+        if let Some(tok) = app.app_state.config.auth_token.clone() {
+            app.api_client.set_token(Some(tok.clone()));
+            app.auth_token = Some(tok);
+            // If token exists, keep login window closed
+            app.show_login_window = false;
+        } else {
+            // No token -> prompt login
+            app.show_login_window = true;
+        }
+
+        // Create Tokio runtime in a background thread (native only)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Load .env if present
+            let _ = dotenvy::dotenv();
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let handle = rt.handle().clone();
+            std::thread::spawn(move || {
+                rt.block_on(async {
+                    futures::future::pending::<()>().await; // Keeps runtime alive indefinitely
+                });
             });
-        });
-        app.rt_handle = Some(handle);
+            app.rt_handle = Some(handle);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            app.rt_handle = None;
+        }
 
         // If no portfolios exist, create a quick demo portfolio to enable charts
         if app.app_state.portfolios.is_none() {
@@ -321,7 +379,6 @@ impl TemplateApp {
         let api_client = self.api_client.clone();
         let async_state = Arc::clone(&self.async_state);
         let ctx = ctx.clone();
-        let ctx2 = ctx.clone();
 
         // Mark symbol as being fetched
         if let Ok(mut state) = self.async_state.try_lock() {
@@ -333,47 +390,81 @@ impl TemplateApp {
 
         log::info!("Spawning fetch for symbol: {}", symbol);
 
-        if let Some(handle) = &self.rt_handle {
-            handle.spawn(async move {
-                log::debug!("Starting fetch for symbol: {}", symbol);
-                let start = std::time::Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(handle) = &self.rt_handle {
+                let ctx2 = ctx.clone();
+                handle.spawn(async move {
+                    log::debug!("Starting fetch for symbol: {}", symbol);
+                    let start = std::time::Instant::now();
 
-                let result = api_client
-                    .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
-                    .await;
+                    let result = api_client
+                        .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
+                        .await;
 
-                log::info!("Fetch for {} completed in {:?}", symbol, start.elapsed());
+                    log::info!("Fetch for {} completed in {:?}", symbol, start.elapsed());
 
-                let price_points = match result {
-                    Ok(mut history_map) => {
-                        if let Some(points) = history_map.remove(&symbol) {
-                            log::info!("Got {} price points for {}", points.len(), symbol);
-                            Ok(points)
-                        } else {
-                            log::warn!("No price history found for symbol {}", symbol);
-                            Err("No price history found for symbol".to_string())
+                    let price_points = match result {
+                        Ok(mut history_map) => {
+                            if let Some(points) = history_map.remove(&symbol) {
+                                log::info!("Got {} price points for {}", points.len(), symbol);
+                                Ok(points)
+                            } else {
+                                log::warn!("No price history found for symbol {}", symbol);
+                                Err("No price history found for symbol".to_string())
+                            }
                         }
-                    }
-                    Err(e) => {
-                        log::error!("Error fetching {}: {}", symbol, e);
-                        Err(e.to_string())
-                    }
-                };
+                        Err(e) => {
+                            log::error!("Error fetching {}: {}", symbol, e);
+                            Err(e.to_string())
+                        }
+                    };
 
-                if let Ok(mut state) = async_state.lock() {
-                    state.fetching_symbols.remove(&symbol);
-                    state
-                        .price_history_results
-                        .push((symbol.clone(), price_points));
-                    log::debug!("Updated async state for {}", symbol);
-                }
+                    if let Ok(mut state) = async_state.lock() {
+                        state.fetching_symbols.remove(&symbol);
+                        state
+                            .price_history_results
+                            .push((symbol.clone(), price_points));
+                        log::debug!("Updated async state for {}", symbol);
+                    }
 
-                ctx2.request_repaint();
-            });
-        } else {
-            log::warn!("Runtime handle not available, falling back to tokio::spawn");
+                    ctx2.request_repaint();
+                });
+            } else {
+                log::warn!("Runtime handle not available, falling back to tokio::spawn");
+                let ctx_clone = ctx.clone();
+                tokio::spawn(async move {
+                    let result = api_client
+                        .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
+                        .await;
+
+                    let price_points = match result {
+                        Ok(mut history_map) => {
+                            if let Some(points) = history_map.remove(&symbol) {
+                                Ok(points)
+                            } else {
+                                Err("No price history found for symbol".to_string())
+                            }
+                        }
+                        Err(e) => Err(e.to_string()),
+                    };
+
+                    if let Ok(mut state) = async_state.lock() {
+                        state.fetching_symbols.remove(&symbol);
+                        state
+                            .price_history_results
+                            .push((symbol.clone(), price_points));
+                    }
+
+                    ctx_clone.request_repaint();
+                });
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
             let ctx_clone = ctx.clone();
-            tokio::spawn(async move {
+            wasm_bindgen_futures::spawn_local(async move {
                 let result = api_client
                     .get_historic_prices(&[symbol.clone()], "2023-01-01", "2024-12-31")
                     .await;
@@ -683,18 +774,34 @@ impl TemplateApp {
         let async_state = Arc::clone(&self.async_state);
         let ctx = ctx.clone();
 
-        if let Some(handle) = &self.rt_handle {
-            handle.spawn(async move {
-                let result = api_client.test_health().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(handle) = &self.rt_handle {
+                handle.spawn(async move {
+                    let result = api_client.test_health().await;
 
-                if let Ok(mut state) = async_state.lock() {
-                    state.connection_result = Some(result.map_err(|e| e.to_string()));
-                }
+                    if let Ok(mut state) = async_state.lock() {
+                        state.connection_result = Some(result.map_err(|e| e.to_string()));
+                    }
 
-                ctx.request_repaint();
-            });
-        } else {
-            tokio::spawn(async move {
+                    ctx.request_repaint();
+                });
+            } else {
+                tokio::spawn(async move {
+                    let result = api_client.test_health().await;
+
+                    if let Ok(mut state) = async_state.lock() {
+                        state.connection_result = Some(result.map_err(|e| e.to_string()));
+                    }
+
+                    ctx.request_repaint();
+                });
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
                 let result = api_client.test_health().await;
 
                 if let Ok(mut state) = async_state.lock() {
@@ -751,11 +858,21 @@ impl TemplateApp {
     }
 
     fn toggle_data_provider(&mut self) {
-        // Toggle the provider mode
-        self.app_state.config.use_native_provider = !self.app_state.config.use_native_provider;
+        // Toggle the provider mode. In web/WASM, native provider is unavailable, so keep it off.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.app_state.config.use_native_provider = !self.app_state.config.use_native_provider;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.app_state.config.use_native_provider = false;
+        }
 
         // Recreate API client with new settings
-        let use_native = self.app_state.config.use_native_provider;
+    #[cfg(target_arch = "wasm32")]
+    let use_native = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let use_native = self.app_state.config.use_native_provider;
         let key = self.app_state.config.alphavantage_api_key.clone();
         self.api_client =
             ApiClient::new(&self.app_state.config.api_base_url).with_native(use_native, key);
@@ -764,7 +881,7 @@ impl TemplateApp {
         self.connection_status = ConnectionStatus::Disconnected;
 
         // Update test message
-        if use_native {
+    if use_native {
             self.test_message = "Switched to Native (Alpha Vantage) provider".to_string();
         } else {
             self.test_message = "Switched to Server Backend provider".to_string();
@@ -802,8 +919,6 @@ impl eframe::App for TemplateApp {
 
         // Drain any backtest requests emitted by components and spawn backend calls
         for ev in drain_backtest_requests(ctx) {
-            let api_client = self.api_client.clone();
-            let ctx_clone = ctx.clone();
             let selected = ev.portfolio_name.clone();
             // Capture current holdings to create backend portfolio if missing
             let holdings: HashMap<String, f64> = self
@@ -814,15 +929,87 @@ impl eframe::App for TemplateApp {
                 .map(|p| p.holdings.clone())
                 .unwrap_or_default();
 
-            if let Some(handle) = &self.rt_handle {
-                handle.spawn(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some(handle) = &self.rt_handle {
+                    let api_client = self.api_client.clone();
+                    let ctx_clone = ctx.clone();
+                    let selected_cl = selected.clone();
+                    let strategy_name = ev.strategy_name.clone();
+                    let start_date = ev.start_date.clone();
+                    let end_date = ev.end_date.clone();
+                    let benchmark = ev.benchmark.clone();
+                    let initial_capital = ev.initial_capital;
+                    let commission = ev.commission;
+                    let slippage = ev.slippage;
+                    let holdings_cl = holdings.clone();
+
+                    handle.spawn(async move {
+                        // Ensure portfolio exists on backend
+                        let ensure_res = match api_client.get_portfolio(&selected_cl).await {
+                            Ok(_) => Ok(()),
+                            Err(_) => {
+                                // Try to create with current holdings
+                                api_client
+                                    .create_portfolio(&selected_cl, &holdings_cl)
+                                    .await
+                                    .map(|_| ())
+                            }
+                        };
+
+                        let res = match ensure_res {
+                            Ok(()) => {
+                                api_client
+                                    .run_backtest(
+                                        &selected_cl,
+                                        &strategy_name,
+                                        &start_date,
+                                        &end_date,
+                                        initial_capital,
+                                        commission,
+                                        slippage,
+                                        &benchmark,
+                                    )
+                                    .await
+                            }
+                            Err(e) => Err(e),
+                        };
+
+                        // Store raw result JSON in memory for UI thread to pick up via ctx memory
+                        ctx_clone.memory_mut(|mem| {
+                            let id = egui::Id::new("backtest_result_json");
+                            let mut list: Vec<(String, Result<serde_json::Value, String>)> =
+                                mem.data.get_temp(id).unwrap_or_default();
+                            list.push((selected_cl.clone(), res.map_err(|e| e.to_string())));
+                            mem.data.insert_temp(id, list);
+                        });
+
+                        ctx_clone.request_repaint();
+                    });
+                }
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                let api_client = self.api_client.clone();
+                let ctx_clone = ctx.clone();
+                let selected_cl = selected.clone();
+                let strategy_name = ev.strategy_name.clone();
+                let start_date = ev.start_date.clone();
+                let end_date = ev.end_date.clone();
+                let benchmark = ev.benchmark.clone();
+                let initial_capital = ev.initial_capital;
+                let commission = ev.commission;
+                let slippage = ev.slippage;
+                let holdings_cl = holdings.clone();
+
+                wasm_bindgen_futures::spawn_local(async move {
                     // Ensure portfolio exists on backend
-                    let ensure_res = match api_client.get_portfolio(&selected).await {
+                    let ensure_res = match api_client.get_portfolio(&selected_cl).await {
                         Ok(_) => Ok(()),
                         Err(_) => {
-                            // Try to create with current holdings
                             api_client
-                                .create_portfolio(&selected, holdings)
+                                .create_portfolio(&selected_cl, &holdings_cl)
                                 .await
                                 .map(|_| ())
                         }
@@ -832,26 +1019,25 @@ impl eframe::App for TemplateApp {
                         Ok(()) => {
                             api_client
                                 .run_backtest(
-                                    &selected,
-                                    &ev.strategy_name,
-                                    &ev.start_date,
-                                    &ev.end_date,
-                                    ev.initial_capital,
-                                    ev.commission,
-                                    ev.slippage,
-                                    &ev.benchmark,
+                                    &selected_cl,
+                                    &strategy_name,
+                                    &start_date,
+                                    &end_date,
+                                    initial_capital,
+                                    commission,
+                                    slippage,
+                                    &benchmark,
                                 )
                                 .await
                         }
                         Err(e) => Err(e),
                     };
 
-                    // Store raw result JSON in memory for UI thread to pick up via ctx memory
                     ctx_clone.memory_mut(|mem| {
                         let id = egui::Id::new("backtest_result_json");
                         let mut list: Vec<(String, Result<serde_json::Value, String>)> =
                             mem.data.get_temp(id).unwrap_or_default();
-                        list.push((selected.clone(), res.map_err(|e| e.to_string())));
+                        list.push((selected_cl.clone(), res.map_err(|e| e.to_string())));
                         mem.data.insert_temp(id, list);
                     });
 
@@ -1156,6 +1342,16 @@ impl eframe::App for TemplateApp {
                     ui.checkbox(&mut self.show_portfolio_panel, "Portfolio Panel");
                     ui.checkbox(&mut self.show_status_window, "Status Window");
                 });
+
+                // Account menu: login / users management
+                ui.menu_button("Account", |ui| {
+                    if ui.button("Login").clicked() {
+                        self.show_login_window = true;
+                    }
+                    if ui.button("Users").clicked() {
+                        self.show_users_window = true;
+                    }
+                });
             });
         });
 
@@ -1167,6 +1363,244 @@ impl eframe::App for TemplateApp {
         // Status window
         if self.show_status_window {
             self.render_status_window(ctx);
+        }
+
+        // Login window (minimal Google OAuth via pasted ID token)
+        if self.show_login_window {
+            let mut open = true;
+            egui::Window::new("Login")
+                .open(&mut open)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.label("Paste Google ID token (from your OAuth flow) or use legacy username/password.");
+                    ui.add_space(8.0);
+                    ui.label("Google ID Token:");
+                    ui.text_edit_singleline(&mut self.login_password); // reuse field to avoid new ones
+                    ui.horizontal(|ui| {
+                        if ui.button("Login with Google").clicked() {
+                            let id_token = self.login_password.clone();
+                            let api = self.api_client.clone();
+                            let ctx2 = ctx.clone();
+                            // We need mutable refs after async completes; capture a pointer via egui memory
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if let Some(handle) = &self.rt_handle {
+                                handle.spawn(async move {
+                                    let res = api.auth_google(&id_token).await;
+                                    ctx2.memory_mut(|mem| {
+                                        mem.data.insert_temp(egui::Id::new("login_result"), res.map_err(|e| e.to_string()));
+                                    });
+                                    ctx2.request_repaint();
+                                });
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let res = api.auth_google(&id_token).await;
+                                    ctx2.memory_mut(|mem| {
+                                        mem.data.insert_temp(egui::Id::new("login_result"), res.map_err(|e| e.to_string()));
+                                    });
+                                    ctx2.request_repaint();
+                                });
+                            }
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.login_password.clear();
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Login with Google (browser)").on_hover_text("Open Google in your browser and wait for login to complete").clicked() {
+                            let api = self.api_client.clone();
+                            let ctx2 = ctx.clone();
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if let Some(handle) = &self.rt_handle {
+                                handle.spawn(async move {
+                                    let start = api.google_oauth_start().await;
+                                    let (auth_url, state) = match start {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            ctx2.memory_mut(|mem| {
+                                                mem.data.insert_temp(egui::Id::new("login_error"), format!("OAuth start failed: {}", e));
+                                            });
+                                            ctx2.request_repaint();
+                                            return;
+                                        }
+                                    };
+                                    // Try to open the browser
+                                    let _ = ApiClient::open_in_browser(&auth_url);
+                                    // Always expose URL as a fallback in UI
+                                    ctx2.memory_mut(|mem| {
+                                        mem.data.insert_temp(egui::Id::new("login_auth_url"), auth_url.clone());
+                                    });
+                                    // Poll until complete (up to ~60s)
+                                    let mut attempts = 0;
+                                    loop {
+                                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                        attempts += 1;
+                                        match api.google_oauth_status(&state).await {
+                                            Ok((done, maybe)) => {
+                                                if done {
+                                                    if let Some((token, username)) = maybe {
+                                                        ctx2.memory_mut(|mem| {
+                                                            let res: Result<(String, Option<String>), String> = Ok((token, username));
+                                                            mem.data.insert_temp(egui::Id::new("login_result"), res);
+                                                        });
+                                                        ctx2.request_repaint();
+                                                        break;
+                                                    }
+                                                } else {
+                                                    // Pending: keep UI responsive
+                                                    ctx2.request_repaint();
+                                                }
+                                            }
+                                            Err(_e) => {
+                                                // keep polling unless too many attempts
+                                            }
+                                        }
+                                        if attempts > 40 { // ~60s
+                                            ctx2.memory_mut(|mem| {
+                                                mem.data.insert_temp(egui::Id::new("login_error"), "Login timed out".to_string());
+                                            });
+                                            ctx2.request_repaint();
+                                            break;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                    // Show auth URL fallback (clickable) if available and indicate progress
+                    ctx.memory(|mem| {
+                        if let Some(url) = mem.data.get_temp::<String>(egui::Id::new("login_auth_url")) {
+                            ui.separator();
+                            ui.label("If your browser didn't open, click:");
+                            ui.hyperlink(url);
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Waiting for browser login to complete...");
+                                if ui.button("Cancel").clicked() {
+                                    // Clear hint and close window; background task will timeout.
+                                    ctx.memory_mut(|mem_mut| {
+                                        mem_mut.data.remove::<String>(egui::Id::new("login_auth_url"));
+                                    });
+                                    self.show_login_window = false;
+                                }
+                            });
+                        }
+                        if let Some(err) = mem.data.get_temp::<String>(egui::Id::new("login_error")) {
+                            ui.separator();
+                            ui.colored_label(egui::Color32::LIGHT_RED, err);
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label("Legacy Username/Password (dev/testing)");
+                    ui.horizontal(|ui| {
+                        ui.label("Username:");
+                        ui.text_edit_singleline(&mut self.login_username);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Password:");
+                        ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
+                    });
+                    if ui.button("Login").clicked() {
+                        let username = self.login_username.clone();
+                        let password = self.login_password.clone();
+                        let api = self.api_client.clone();
+                        let ctx2 = ctx.clone();
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(handle) = &self.rt_handle {
+                            handle.spawn(async move {
+                                let res = api.auth_login(&username, &password).await;
+                                ctx2.memory_mut(|mem| {
+                                    mem.data.insert_temp(egui::Id::new("legacy_login_result"), res.map_err(|e| e.to_string()));
+                                });
+                                ctx2.request_repaint();
+                            });
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let res = api.auth_login(&username, &password).await;
+                                ctx2.memory_mut(|mem| {
+                                    mem.data.insert_temp(egui::Id::new("legacy_login_result"), res.map_err(|e| e.to_string()));
+                                });
+                                ctx2.request_repaint();
+                            });
+                        }
+                    }
+
+                    // Helper: Login with GOOGLE_ID_TOKEN from environment (.env)
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui.button("Login with Google (.env)").on_hover_text("Reads GOOGLE_ID_TOKEN from environment and logs in").clicked() {
+                        if let Ok(id_token) = std::env::var("GOOGLE_ID_TOKEN") {
+                            let api = self.api_client.clone();
+                            let ctx2 = ctx.clone();
+                            if let Some(handle) = &self.rt_handle {
+                                handle.spawn(async move {
+                                    let res = api.auth_google(&id_token).await;
+                                    ctx2.memory_mut(|mem| {
+                                        mem.data.insert_temp(egui::Id::new("login_result"), res.map_err(|e| e.to_string()));
+                                    });
+                                    ctx2.request_repaint();
+                                });
+                            }
+                        } else {
+                            self.last_error_message = Some("GOOGLE_ID_TOKEN not set in environment".into());
+                        }
+                    }
+
+                    // Read any login result and persist token
+                    let mut took = false;
+                    ctx.memory_mut(|mem| {
+                        let id = egui::Id::new("login_result");
+                        if let Some(res) = mem.data.get_temp::<Result<(String, Option<String>), String>>(id) {
+                            took = true;
+                            match res {
+                                Ok((token, username)) => {
+                                    // Persist
+                                    self.api_client.set_token(Some(token.clone()));
+                                    self.auth_token = Some(token.clone());
+                                    self.app_state.config.auth_token = Some(token);
+                                    self.app_state.config.current_user = username;
+                                    self.show_login_window = false;
+                                    // Clear any auth url hint
+                                    ctx.memory_mut(|mem_mut| {
+                                        mem_mut.data.remove::<String>(egui::Id::new("login_auth_url"));
+                                    });
+                                }
+                                Err(e) => {
+                                    self.last_error_message = Some(format!("Login failed: {}", e));
+                                }
+                            }
+                        }
+                        mem.data.remove::<Result<(String, Option<String>), String>>(id);
+                    });
+                    if !took {
+                        ctx.memory_mut(|mem| {
+                            let id = egui::Id::new("legacy_login_result");
+                            if let Some(res) = mem.data.get_temp::<Result<String, String>>(id) {
+                                match res {
+                                    Ok(token) => {
+                                        self.api_client.set_token(Some(token.clone()));
+                                        self.auth_token = Some(token.clone());
+                                        self.app_state.config.auth_token = Some(token);
+                                        self.app_state.config.current_user = self.login_username.clone().into();
+                                        self.show_login_window = false;
+                                    }
+                                    Err(e) => {
+                                        self.last_error_message = Some(format!("Login failed: {}", e));
+                                    }
+                                }
+                            }
+                            mem.data.remove::<Result<String, String>>(id);
+                        });
+                    }
+                });
+            if !open { self.show_login_window = false; }
         }
 
         // Central panel with portfolio application content

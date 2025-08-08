@@ -15,6 +15,8 @@ pub struct ApiClient {
     // Local/native mode:
     use_native_provider: bool,
     alphavantage_api_key: Option<String>,
+    // Optional bearer token for authenticated requests
+    access_token: Option<String>,
 }
 
 impl ApiClient {
@@ -22,14 +24,28 @@ impl ApiClient {
         Self {
             client: Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
+            // On web, native provider is unavailable; force false.
+            #[cfg(target_arch = "wasm32")]
+            use_native_provider: false,
+            #[cfg(not(target_arch = "wasm32"))]
             use_native_provider: false,
             alphavantage_api_key: None,
+            access_token: None,
         }
     }
 
+    /// Set or clear bearer token used for authenticated requests.
+    pub fn set_token(&mut self, token: Option<String>) {
+        self.access_token = token;
+    }
+
     /// Enable or disable native provider mode and set optional Alpha Vantage API key
-    pub fn with_native(mut self, use_native: bool, alphavantage_api_key: Option<String>) -> Self {
-        self.use_native_provider = use_native;
+    pub fn with_native(mut self, _use_native: bool, alphavantage_api_key: Option<String>) -> Self {
+        // Ignore native mode on web builds
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.use_native_provider = _use_native;
+        }
         self.alphavantage_api_key = alphavantage_api_key;
         self
     }
@@ -54,6 +70,149 @@ impl ApiClient {
                 )))
             }
         }
+    }
+
+    /// Authenticate against backend and return access token string.
+    pub async fn auth_login(&self, username: &str, password: &str) -> Result<String, ApiError> {
+        if self.use_native_provider {
+            return Err(ApiError::Unsupported("Login supported only against backend".into()));
+        }
+        let url = format!("{}/auth/login", self.base_url);
+        let payload = serde_json::json!({ "username": username, "password": password });
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("auth_login failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        if let Some(tok) = v.get("access_token").and_then(|t| t.as_str()) {
+            Ok(tok.to_string())
+        } else {
+            Err(ApiError::Parsing("Missing access_token in login response".into()))
+        }
+    }
+
+    /// Authenticate via Google by sending a Google ID token to the backend.
+    /// Returns (access_token, username optional)
+    pub async fn auth_google(&self, id_token: &str) -> Result<(String, Option<String>), ApiError> {
+        if self.use_native_provider {
+            return Err(ApiError::Unsupported("Google login supported only against backend".into()));
+        }
+        let url = format!("{}/auth/google", self.base_url);
+        let payload = serde_json::json!({ "id_token": id_token });
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("auth_google failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        let tok = v
+            .get("access_token")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| ApiError::Parsing("Missing access_token in Google login response".into()))?;
+        let username = v.get("username").and_then(|u| u.as_str()).map(|s| s.to_string());
+        Ok((tok.to_string(), username))
+    }
+
+    /// Start OAuth flow: returns (auth_url, state)
+    pub async fn google_oauth_start(&self) -> Result<(String, String), ApiError> {
+        if self.use_native_provider {
+            return Err(ApiError::Unsupported("OAuth against backend only".into()));
+        }
+        let url = format!("{}/auth/google/start", self.base_url);
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("google_oauth_start failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        let auth_url = v.get("auth_url").and_then(|s| s.as_str()).ok_or_else(|| ApiError::Parsing("Missing auth_url".into()))?.to_string();
+        let state = v.get("state").and_then(|s| s.as_str()).ok_or_else(|| ApiError::Parsing("Missing state".into()))?.to_string();
+        Ok((auth_url, state))
+    }
+
+    /// Poll OAuth status until token available or pending
+    pub async fn google_oauth_status(&self, state: &str) -> Result<(bool, Option<(String, Option<String>)>), ApiError> {
+        let url = format!("{}/auth/google/status?state={}", self.base_url, urlencoding::encode(state));
+        let resp = self.client.get(&url).send().await?;
+        if resp.status().as_u16() == 202 {
+            return Ok((false, None));
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("google_oauth_status failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        let tok = v.get("access_token").and_then(|t| t.as_str()).ok_or_else(|| ApiError::Parsing("Missing access_token".into()))?.to_string();
+        let username = v.get("username").and_then(|u| u.as_str()).map(|s| s.to_string());
+        Ok((true, Some((tok, username))))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_in_browser(url: &str) -> Result<(), ApiError> {
+        if let Err(e) = opener::open(url) {
+            return Err(ApiError::Backend(format!("Failed to open browser: {}", e)));
+        }
+        Ok(())
+    }
+
+    /// List users (requires bearer token with admin privileges)
+    pub async fn list_users(&self) -> Result<Vec<Value>, ApiError> {
+        let url = format!("{}/users", self.base_url);
+        let mut req = self.client.get(&url);
+        if let Some(ref t) = self.access_token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("list_users failed: status={}, body={}", status, text)));
+        }
+        let v: Vec<Value> = resp.json().await?;
+        Ok(v)
+    }
+
+    /// Create a user (admin or bootstrap). Expects caller to have proper privileges.
+    pub async fn create_user(&self, username: &str, password: &str, is_admin: bool) -> Result<Value, ApiError> {
+        let url = format!("{}/users", self.base_url);
+        let payload = serde_json::json!({
+            "username": username,
+            "password": password,
+            "is_admin": is_admin
+        });
+        let mut req = self.client.post(&url).json(&payload);
+        if let Some(ref t) = self.access_token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("create_user failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        Ok(v)
+    }
+
+    /// Delete a user
+    pub async fn delete_user(&self, username: &str) -> Result<(), ApiError> {
+        let url = format!("{}/users/{}", self.base_url, urlencoding::encode(username));
+        let mut req = self.client.delete(&url);
+        if let Some(ref t) = self.access_token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("delete_user failed: status={}, body={}", status, text)));
+        }
+        Ok(())
     }
 
     /// Get all portfolios from the backend (native mode returns empty list placeholder)
@@ -106,12 +265,12 @@ impl ApiClient {
     pub async fn create_portfolio(
         &self,
         name: &str,
-        holdings: HashMap<String, f64>,
+        holdings: &HashMap<String, f64>,
     ) -> Result<Portfolio, ApiError> {
         if self.use_native_provider {
             // Create a minimal local portfolio
             let mut p = Portfolio::new(name.to_string());
-            p.holdings = holdings;
+            p.holdings = holdings.clone();
             p.total_value = 0.0;
             Ok(p)
         } else {
@@ -158,7 +317,7 @@ impl ApiClient {
                 urlencoding::encode(&symbols_str)
             );
             // Retry backend call as well (e.g., transient 5xx)
-            self.with_retries(|| {
+            let res = self.with_retries(|| {
                 let this = self.clone();
                 let url_owned = url.clone();
                 async move {
@@ -177,7 +336,28 @@ impl ApiClient {
                     }
                 }
             })
-            .await
+            .await;
+
+            match res {
+                Ok(map) => Ok(map),
+                Err(e) => {
+                    // If backend fails and we have a key, try native fallback
+                    if self.alphavantage_api_key.is_some() {
+                        log::warn!(
+                            "Backend get_market_data failed ({}). Falling back to Alpha Vantage.",
+                            e
+                        );
+                        self.with_retries(|| {
+                            let this = self.clone();
+                            let syms: Vec<String> = symbols.to_vec();
+                            async move { this.alpha_vantage_current_prices(&syms).await }
+                        })
+                        .await
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
         }
     }
 
@@ -448,6 +628,7 @@ impl ApiClient {
 impl ApiClient {
     // Generic retry helper with exponential backoff and jitter.
     // Retries on: ApiError::RateLimited and ApiError::Network.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn with_retries<T, F, Fut>(&self, mut op_factory: F) -> Result<T, ApiError>
     where
         F: FnMut() -> Fut + Send,
@@ -488,6 +669,51 @@ impl ApiClient {
                     );
 
                     tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn with_retries<T, F, Fut>(&self, mut op_factory: F) -> Result<T, ApiError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, ApiError>>,
+    {
+        let max_retries = 4usize;
+        let base_delay = Duration::from_millis(500);
+        let mut attempt = 0usize;
+
+        loop {
+            let fut = op_factory();
+            match fut.await {
+                Ok(v) => return Ok(v),
+                Err(err) => {
+                    let should_retry =
+                        matches!(err, ApiError::RateLimited(_) | ApiError::Network(_));
+                    if !should_retry || attempt >= max_retries {
+                        return Err(err);
+                    }
+
+                    // Exponential backoff with jitter
+                    let exp = 1u32 << attempt; // 1, 2, 4, 8
+                    let now_nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    let jitter_ms: u64 = now_nanos % 251;
+                    let delay = base_delay.saturating_mul(exp) + Duration::from_millis(jitter_ms);
+
+                    log::warn!(
+                        "Retrying after error (attempt {} of {}): {}. Sleeping {:?}",
+                        attempt + 1,
+                        max_retries,
+                        err,
+                        delay
+                    );
+
+                    gloo_timers::future::sleep(delay).await;
                     attempt += 1;
                 }
             }

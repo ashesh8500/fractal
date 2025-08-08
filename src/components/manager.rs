@@ -30,8 +30,11 @@ impl ComponentManager {
     }
     
     pub fn register_component(&mut self, component: Box<dyn PortfolioComponent>) {
-        self.window_open.push(component.is_open());
-        self.components.push(component);
+    // Do not open any component windows by default
+    self.window_open.push(false);
+    let mut comp = component;
+    comp.set_open(false);
+    self.components.push(comp);
     }
     
     pub fn render_all(&mut self, ui: &mut egui::Ui, portfolio: &Portfolio, config: &Config) {
