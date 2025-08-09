@@ -17,6 +17,7 @@ import textwrap
 import json
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any, List, Tuple, Type
+from pydantic import BaseModel
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,28 @@ except Exception:
     instantiate_strategy = getattr(_agt, "instantiate_strategy")
 
 # LangChain imports will be done inside main() when needed to avoid optional dep errors
+
+
+# Tool schemas for LangChain tool-calling
+class RegisterStrategy(BaseModel):
+    """Register a new strategy class to custom folder."""
+    class_name: str
+    code: str
+    strategy_name: Optional[str] = None
+
+
+class BacktestStrategy(BaseModel):
+    """Backtest inline strategy code and return metrics."""
+    code: str
+    symbols: Optional[List[str]] = None
+    years: Optional[int] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    initial_capital: Optional[float] = None
+    commission: Optional[float] = None
+    slippage: Optional[float] = None
+    rebalance: Optional[str] = None
+    benchmark: Optional[str] = None
 
 
 def _plot_equity_curve(res) -> Any:
@@ -502,111 +525,158 @@ def main():
                     """
                 ).strip()
 
-            # Choose model
+            # Choose model and set up tools + streaming
             llm = None
-            if provider == "OpenAI-compatible":
-                try:
+            tools = []
+            try:
+                from langchain_core.tools import tool as lc_tool  # type: ignore
+                from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
+                # Streaming callback to Streamlit
+                class StreamHandler:
+                    def __init__(self, container):
+                        self.container = container
+                        self.text = ""
+                    def on_llm_new_token(self, token: str, **kwargs):
+                        self.text += token
+                        self.container.markdown(self.text)
+                # Define tools via decorators using our Pydantic schemas
+                # Capture sidebar defaults for tool fallbacks
+                defaults_local = {
+                    "symbols": symbols,
+                    "years": years,
+                    "initial_capital": initial_capital,
+                    "commission": commission,
+                    "slippage": slippage,
+                    "rebalance": rebalance,
+                    "benchmark": benchmark,
+                }
+
+                @lc_tool(args_schema=RegisterStrategy)
+                def register_strategy(class_name: str, code: str, strategy_name: Optional[str] = None) -> str:
+                    """Save a strategy file to custom folder. Returns module path and class."""
+                    if chat_mode != "Implement":
+                        return "Switch to Implement mode to register strategies."
+                    mod_path, cls = write_new_strategy(class_name, strategy_name or class_name, source=code)
+                    return f"Registered {mod_path}:{cls}"
+
+                @lc_tool(args_schema=BacktestStrategy)
+                def backtest_strategy(
+                    code: str,
+                    symbols: Optional[List[str]] = None,
+                    years: Optional[int] = None,
+                    start_date: Optional[str] = None,
+                    end_date: Optional[str] = None,
+                    initial_capital: Optional[float] = None,
+                    commission: Optional[float] = None,
+                    slippage: Optional[float] = None,
+                    rebalance: Optional[str] = None,
+                    benchmark: Optional[str] = None,
+                ) -> str:
+                    """Run a backtest on inline code; returns a compact JSON metrics summary."""
+                    # Resolve parameters with fallbacks to sidebar defaults
+                    syms = symbols if symbols else defaults_local.get("symbols", [])
+                    if not syms:
+                        return json.dumps({"error": "No symbols"})
+                    yrs_val = int(years) if years is not None else int(defaults_local.get("years", 3))
+                    if start_date and end_date:
+                        start_dt = pd.to_datetime(start_date).to_pydatetime()
+                        end_dt = pd.to_datetime(end_date).to_pydatetime()
+                    else:
+                        end_dt = datetime.today()
+                        start_dt = end_dt - timedelta(days=365 * max(1, yrs_val))
+                    init_cap = float(initial_capital) if initial_capital is not None else float(defaults_local.get("initial_capital", 100000.0))
+                    comm = float(commission) if commission is not None else float(defaults_local.get("commission", 0.0005))
+                    slip = float(slippage) if slippage is not None else float(defaults_local.get("slippage", 0.0002))
+                    reb = str(rebalance) if rebalance is not None else str(defaults_local.get("rebalance", "monthly"))
+                    bench = str(benchmark) if benchmark is not None else str(defaults_local.get("benchmark", "QQQ"))
+                    fig1, fig2, metrics = _run_backtest_on_code(code, [str(s).upper() for s in syms], start_dt, end_dt, init_cap, comm, slip, reb, bench)
+                    # Render charts in UI while returning JSON summary for the tool output
+                    st.plotly_chart(fig1, use_container_width=True)
+                    if fig2 is not None:
+                        st.plotly_chart(fig2, use_container_width=True)
+                    st.json(metrics)
+                    result_json = json.dumps({
+                        "tool": "backtest_result",
+                        "symbols": syms,
+                        "start": pd.to_datetime(start_dt).isoformat(),
+                        "end": pd.to_datetime(end_dt).isoformat(),
+                        "metrics": metrics,
+                    })
+                    # Append concise summary to chat history, too
+                    st.session_state.chat.append({"role": "assistant", "content": result_json})
+                    return result_json
+
+                tools = [register_strategy, backtest_strategy]
+                # Provider selection
+                if provider == "OpenAI-compatible":
                     from langchain_openai import ChatOpenAI  # type: ignore
-                    llm = ChatOpenAI(model=model, openai_api_key=api_key or "", openai_api_base=api_base or None)
-                except Exception:
-                    llm = None
-            elif provider == "LiteLLM (LM Studio)":
-                # Prefer the newer langchain-litellm provider; fall back to community if not installed
-                try:
-                    from langchain_litellm import ChatLiteLLM  # type: ignore
-                    llm = ChatLiteLLM(model=model, api_key=api_key or "sk-ignored", base_url=api_base or "http://localhost:1234/v1")
-                except Exception:
+                    llm = ChatOpenAI(model=model, openai_api_key=api_key or "", openai_api_base=api_base or None, streaming=True)
+                elif provider == "LiteLLM (LM Studio)":
                     try:
-                        from langchain_community.chat_models import ChatLiteLLM  # type: ignore
-                        llm = ChatLiteLLM(model=model, api_key=api_key or "sk-ignored", base_url=api_base or "http://localhost:1234/v1")
+                        from langchain_litellm import ChatLiteLLM  # type: ignore
+                        llm = ChatLiteLLM(model=model, api_key=api_key or "sk-ignored", base_url=api_base or "http://localhost:1234/v1", streaming=True)
                     except Exception:
-                        llm = None
+                        from langchain_community.chat_models import ChatLiteLLM  # type: ignore
+                        llm = ChatLiteLLM(model=model, api_key=api_key or "sk-ignored", base_url=api_base or "http://localhost:1234/v1", streaming=True)
+            except Exception:
+                llm = None
 
             if llm is None:
                 st.warning("LangChain back-end not available. Install langchain and a provider.")
             else:
                 with st.spinner("Asking model…"):
-                    # Build OpenAI-compatible list of dict messages
-                    messages = [
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": user_input},
-                    ]
+                    # Streaming container for assistant text
+                    stream_box = st.empty()
+                    handler = None
                     try:
-                        # Many LC chat models accept list[dict]
-                        resp = llm.invoke(messages)  # type: ignore
-                        content = getattr(resp, "content", None)
-                        if not content and isinstance(resp, dict):
-                            content = resp.get("content")  # type: ignore
-                        if not content:
-                            content = str(resp)
-                    except Exception as e:
-                        content = f"Error from model: {e}"
-                # Append assistant content first
-                st.session_state.chat.append({"role": "assistant", "content": content})
-
-                # Try to detect a tool call
-                parsed = _parse_tool_call(content)
-                if parsed is not None:
-                    tool_name, payload = parsed
-                    if tool_name == "register_strategy":
-                        if chat_mode != "Implement":
-                            st.warning("Switch mode to 'Implement' to register strategies as files.")
+                        # Some providers need callbacks via callbacks parameter
+                        handler = StreamHandler(stream_box)
+                    except Exception:
+                        handler = None
+                    # Bind tools
+                    try:
+                        llm_with_tools = llm.bind_tools(tools) if hasattr(llm, "bind_tools") else llm
+                    except Exception:
+                        llm_with_tools = llm
+                    # Build messages
+                    msgs = [SystemMessage(content=sys_prompt), HumanMessage(content=user_input)]
+                    try:
+                        resp = llm_with_tools.invoke(msgs, config={"callbacks": [handler]} if handler else None)  # type: ignore
+                    except Exception:
+                        # Fall back to non-streaming
+                        resp = llm_with_tools.invoke(msgs)  # type: ignore
+                    # Display assistant text content (if any)
+                    try:
+                        content_text = getattr(resp, "content", None)
+                        if content_text:
+                            # Ensure full text is shown (in case streaming missed final delta)
+                            stream_box.markdown(str(content_text))
+                            st.session_state.chat.append({"role": "assistant", "content": str(content_text)})
+                    except Exception:
+                        pass
+                    # Execute any tool calls
+                    try:
+                        tool_calls = getattr(resp, "tool_calls", []) or []
+                    except Exception:
+                        tool_calls = []
+                # Process tool calls after showing assistant text
+                for tc in tool_calls:
+                    name = getattr(tc, "name", None) or tc.get("name") if isinstance(tc, dict) else None
+                    args = getattr(tc, "args", None) or tc.get("args") if isinstance(tc, dict) else None
+                    if not name:
+                        continue
+                    try:
+                        if name == "register_strategy":
+                            result = tools[0].invoke(args)
+                            st.success(str(result))
+                        elif name == "backtest_strategy":
+                            result = tools[1].invoke(args)
+                            # backtest tool already renders; still show brief status
+                            st.info("Backtest complete")
                         else:
-                            cls_name = payload.get("class_name")
-                            code = payload.get("code")
-                            sname = payload.get("strategy_name")
-                            if cls_name and code:
-                                try:
-                                    mod_path, cls = write_new_strategy(str(cls_name), str(sname or cls_name), source=str(code))
-                                    st.success(f"Registered {mod_path}:{cls}")
-                                except Exception as e:
-                                    st.error(f"Tool register_strategy failed: {e}")
-                            else:
-                                st.error("register_strategy JSON missing class_name or code")
-                    elif tool_name == "backtest_strategy":
-                        # Extract parameters with fallbacks to sidebar defaults
-                        try:
-                            code = str(payload.get("code", ""))
-                            if not code.strip():
-                                raise ValueError("No code provided for backtest")
-                            syms = payload.get("symbols") or symbols
-                            syms = [str(s).upper() for s in syms]
-                            years_req = payload.get("years")
-                            sd = payload.get("start_date")
-                            ed = payload.get("end_date")
-                            if sd and ed:
-                                start_dt = pd.to_datetime(sd).to_pydatetime()
-                                end_dt = pd.to_datetime(ed).to_pydatetime()
-                            else:
-                                yrs = int(years_req) if years_req is not None else years
-                                end_dt = datetime.today()
-                                start_dt = end_dt - timedelta(days=365 * max(1, yrs))
-                            init_cap = float(payload.get("initial_capital", initial_capital))
-                            comm = float(payload.get("commission", commission))
-                            slip = float(payload.get("slippage", slippage))
-                            reb = str(payload.get("rebalance", rebalance))
-                            bench = str(payload.get("benchmark", benchmark))
-
-                            with st.spinner("Running backtest…"):
-                                fig1, fig2, metrics = _run_backtest_on_code(code, syms, start_dt, end_dt, init_cap, comm, slip, reb, bench)
-                                # Human-visible charts
-                                st.plotly_chart(fig1, use_container_width=True)
-                                if fig2 is not None:
-                                    st.plotly_chart(fig2, use_container_width=True)
-                                st.json(metrics)
-                                # Agent-readable summary appended to chat
-                                st.session_state.chat.append({
-                                    "role": "assistant",
-                                    "content": json.dumps({
-                                        "tool": "backtest_result",
-                                        "symbols": syms,
-                                        "start": pd.to_datetime(start_dt).isoformat(),
-                                        "end": pd.to_datetime(end_dt).isoformat(),
-                                        "metrics": metrics,
-                                    })
-                                })
-                        except Exception as e:
-                            st.error(f"Backtest failed: {e}")
+                            st.warning(f"Unknown tool: {name}")
+                    except Exception as e:
+                        st.error(f"Tool '{name}' failed: {e}")
 
         # Persist/restore chat history
         c1, c2 = st.columns(2)
