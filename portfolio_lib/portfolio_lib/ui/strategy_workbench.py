@@ -16,7 +16,7 @@ from __future__ import annotations
 import textwrap
 import json
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Any, List, Tuple
+from typing import Dict, Optional, Any, List, Tuple, Type
 
 import numpy as np
 import pandas as pd
@@ -266,35 +266,120 @@ def _fetch_models(api_base: str, api_key: str = "") -> List[str]:
         return []
 
 
-def _parse_register_tool_call(text: str) -> Optional[Tuple[str, str, Optional[str]]]:
-    """Detect a JSON tool call: {"tool":"register_strategy", "class_name":"...", "code":"...", "strategy_name":"..."}
-    Returns (class_name, code, strategy_name).
+def _parse_tool_call(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Parse a JSON tool call from model output.
+    Supports:
+      - register_strategy: {tool, class_name, code, strategy_name?}
+      - backtest_strategy: {tool, code, symbols, years? or start_date/end_date, initial_capital, commission, slippage, rebalance, benchmark}
+    Returns (tool_name, payload_dict) or None.
     """
-    try:
-        obj = json.loads(text)
-        if isinstance(obj, dict) and obj.get("tool") == "register_strategy":
-            cls = obj.get("class_name")
-            code = obj.get("code")
-            sname = obj.get("strategy_name")
-            if cls and code:
-                return str(cls), str(code), (str(sname) if sname else None)
-    except Exception:
-        pass
-    # fallback: search for first JSON object in text
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            obj = json.loads(text[start : end + 1])
-            if isinstance(obj, dict) and obj.get("tool") == "register_strategy":
-                cls = obj.get("class_name")
-                code = obj.get("code")
-                sname = obj.get("strategy_name")
-                if cls and code:
-                    return str(cls), str(code), (str(sname) if sname else None)
-    except Exception:
-        pass
+    def _as_obj(t: str) -> Optional[Dict[str, Any]]:
+        try:
+            o = json.loads(t)
+            return o if isinstance(o, dict) else None
+        except Exception:
+            return None
+
+    obj = _as_obj(text)
+    if not obj:
+        # fallback: find first JSON object
+        try:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                obj = _as_obj(text[start : end + 1])
+        except Exception:
+            obj = None
+    if not obj:
+        return None
+    tool = obj.get("tool")
+    if tool in {"register_strategy", "backtest_strategy"}:
+        return tool, obj
     return None
+
+
+def _instantiate_strategy_from_source(code: str, class_name: Optional[str] = None) -> BaseStrategy:
+    """Exec code and return an instance of the single subclass of BaseStrategy.
+    If class_name is provided, use it; else auto-detect unique subclass.
+    """
+    ns: Dict[str, Any] = {}
+    exec(code, ns, ns)
+    # find subclasses
+    cls_candidates: List[Type[BaseStrategy]] = []
+    for v in ns.values():
+        try:
+            if isinstance(v, type) and issubclass(v, BaseStrategy) and v is not BaseStrategy:
+                cls_candidates.append(v)
+        except Exception:
+            continue
+    def _construct(cls: Type[BaseStrategy]) -> BaseStrategy:
+        try:
+            return cls()  # type: ignore[call-arg]
+        except TypeError:
+            # Try providing a default name
+            default_name = getattr(cls, "name", cls.__name__)
+            try:
+                return cls(default_name)  # type: ignore[call-arg]
+            except Exception:
+                return cls(name=default_name)  # type: ignore[call-arg]
+
+    if class_name:
+        for c in cls_candidates:
+            if c.__name__ == class_name:
+                return _construct(c)
+        raise ValueError(f"Strategy class {class_name} not found in code")
+    if len(cls_candidates) != 1:
+        raise ValueError(f"Expected exactly one BaseStrategy subclass, found {len(cls_candidates)}")
+    return _construct(cls_candidates[0])
+
+
+def _run_backtest_on_code(
+    code: str,
+    symbols: List[str],
+    start_date: datetime,
+    end_date: datetime,
+    initial_capital: float,
+    commission: float,
+    slippage: float,
+    rebalance: str,
+    benchmark: str,
+) -> Tuple[Any, Optional[Any], Dict[str, Any]]:
+    """Instantiate a strategy from source and run a backtest; return charts and metrics.
+    Returns: (growth_fig, alloc_or_trade_fig, metrics_dict)
+    """
+    strat = _instantiate_strategy_from_source(code)
+    data = YFinanceDataService()
+    svc = BacktestingService(data)
+    bt_cfg = BacktestConfig(
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=initial_capital,
+        commission=commission,
+        slippage=slippage,
+        benchmark=benchmark,
+    )
+    price_history = data.fetch_price_history(symbols, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    valid = [s for s in symbols if s in price_history and not price_history[s].empty]
+    if len(valid) < 2:
+        raise ValueError("Not enough symbols with data to backtest")
+    start_prices = {s: float(price_history[s]["close"].iloc[0]) for s in valid}
+    cap_per = initial_capital / len(valid)
+    initial_holdings = {s: cap_per / start_prices[s] for s in valid}
+    cfg = StrategyConfig(name=strat.name, rebalance_frequency=rebalance)
+    res = svc.run_backtest(strat, cfg, bt_cfg, initial_holdings)
+
+    growth = _plot_growth_with_benchmark(res, price_history, benchmark, initial_holdings) or _plot_equity_curve(res)
+    alloc_or_trades = _plot_allocations(res, price_history) or _plot_trades(res, price_history)
+    metrics = {
+        "total_return": round(res.total_return, 6),
+        "annualized_return": round(res.annualized_return, 6),
+        "volatility": round(res.volatility, 6),
+        "sharpe_ratio": round(res.sharpe_ratio, 6),
+        "max_drawdown": round(res.max_drawdown, 6),
+        "benchmark_return": round(res.benchmark_return, 6),
+        "total_trades": int(res.total_trades),
+    }
+    return growth, alloc_or_trades, metrics
 
 
 def main():
@@ -342,6 +427,7 @@ def main():
 
     with tab_chat:
         st.subheader("Constrained Strategy Builder")
+        chat_mode = st.radio("Chat Mode", ["Discuss", "Implement"], horizontal=True, key="chat_mode")
         st.markdown(
             "Flow: 1) Acknowledge understanding of the requested strategy, 2) Preview a brief plan, 3) Emit a single JSON tool call to register the strategy."
         )
@@ -360,31 +446,61 @@ def main():
             st.session_state.chat.append({"role": "user", "content": user_input})
 
             # Build a system prompt to constrain output
-            sys_prompt = textwrap.dedent(
-                """
-                You are an expert quant Python assistant.
-                Workflow for each user request:
-                1) Respond briefly confirming your understanding of the strategy request.
-                2) Preview the approach at a high level (signals, weighting, constraints).
-                3) Then output a SINGLE JSON object to call a tool to register the strategy file. The JSON must be the last line only.
+            if chat_mode == "Discuss":
+                sys_prompt = textwrap.dedent(
+                    """
+                    You are an expert quant Python assistant focused on strategy exploration.
+                    Flow:
+                    1) Briefly clarify and discuss the strategy idea.
+                    2) When ready to test, OUTPUT A SINGLE JSON OBJECT (last line only) to call a backtest tool.
 
-                Tool spec (emit exactly this JSON shape when ready to register):
-                {
-                    "tool": "register_strategy",
-                    "class_name": "<ClassName>",
-                    "strategy_name": "<short_name>",
-                    "code": "<FULL PYTHON SOURCE CODE>"
-                }
+                    Backtest Tool JSON (emit exactly once when ready):
+                    {
+                        "tool": "backtest_strategy",
+                        "code": "<FULL PYTHON SOURCE CODE>",
+                        "symbols": ["AAPL", "MSFT", "NVDA"],
+                        "years": 3,
+                        "initial_capital": 100000,
+                        "commission": 0.0005,
+                        "slippage": 0.0002,
+                        "rebalance": "monthly",
+                        "benchmark": "QQQ"
+                    }
 
-                Code Requirements:
-                - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
-                - Constructor: super().__init__("<short_name>")
-                - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
-                - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
-                - No external I/O, no network calls.
-                - Compute must be simple and fast.
-                """
-            ).strip()
+                    Code Requirements:
+                    - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
+                    - Constructor: super().__init__("<short_name>")
+                    - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
+                    - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
+                    - Keep it simple and fast. No I/O or network.
+                    """
+                ).strip()
+            else:
+                sys_prompt = textwrap.dedent(
+                    """
+                    You are an expert quant Python assistant.
+                    Workflow for each user request:
+                    1) Respond briefly confirming your understanding of the strategy request.
+                    2) Preview the approach at a high level (signals, weighting, constraints).
+                    3) Then output a SINGLE JSON object to call a tool to register the strategy file. The JSON must be the last line only.
+
+                    Tool spec (emit exactly this JSON shape when ready to register):
+                    {
+                        "tool": "register_strategy",
+                        "class_name": "<ClassName>",
+                        "strategy_name": "<short_name>",
+                        "code": "<FULL PYTHON SOURCE CODE>"
+                    }
+
+                    Code Requirements:
+                    - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
+                    - Constructor: super().__init__("<short_name>")
+                    - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
+                    - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
+                    - No external I/O, no network calls.
+                    - Compute must be simple and fast.
+                    """
+                ).strip()
 
             # Choose model
             llm = None
@@ -428,15 +544,69 @@ def main():
                 # Append assistant content first
                 st.session_state.chat.append({"role": "assistant", "content": content})
 
-                # Try to detect a tool call to register strategy
-                tool = _parse_register_tool_call(content)
-                if tool is not None:
-                    cls_name, code, sname = tool
-                    try:
-                        mod_path, cls = write_new_strategy(cls_name, sname or cls_name, source=code)
-                        st.success(f"Registered {mod_path}:{cls}")
-                    except Exception as e:
-                        st.error(f"Tool register_strategy failed: {e}")
+                # Try to detect a tool call
+                parsed = _parse_tool_call(content)
+                if parsed is not None:
+                    tool_name, payload = parsed
+                    if tool_name == "register_strategy":
+                        if chat_mode != "Implement":
+                            st.warning("Switch mode to 'Implement' to register strategies as files.")
+                        else:
+                            cls_name = payload.get("class_name")
+                            code = payload.get("code")
+                            sname = payload.get("strategy_name")
+                            if cls_name and code:
+                                try:
+                                    mod_path, cls = write_new_strategy(str(cls_name), str(sname or cls_name), source=str(code))
+                                    st.success(f"Registered {mod_path}:{cls}")
+                                except Exception as e:
+                                    st.error(f"Tool register_strategy failed: {e}")
+                            else:
+                                st.error("register_strategy JSON missing class_name or code")
+                    elif tool_name == "backtest_strategy":
+                        # Extract parameters with fallbacks to sidebar defaults
+                        try:
+                            code = str(payload.get("code", ""))
+                            if not code.strip():
+                                raise ValueError("No code provided for backtest")
+                            syms = payload.get("symbols") or symbols
+                            syms = [str(s).upper() for s in syms]
+                            years_req = payload.get("years")
+                            sd = payload.get("start_date")
+                            ed = payload.get("end_date")
+                            if sd and ed:
+                                start_dt = pd.to_datetime(sd).to_pydatetime()
+                                end_dt = pd.to_datetime(ed).to_pydatetime()
+                            else:
+                                yrs = int(years_req) if years_req is not None else years
+                                end_dt = datetime.today()
+                                start_dt = end_dt - timedelta(days=365 * max(1, yrs))
+                            init_cap = float(payload.get("initial_capital", initial_capital))
+                            comm = float(payload.get("commission", commission))
+                            slip = float(payload.get("slippage", slippage))
+                            reb = str(payload.get("rebalance", rebalance))
+                            bench = str(payload.get("benchmark", benchmark))
+
+                            with st.spinner("Running backtest…"):
+                                fig1, fig2, metrics = _run_backtest_on_code(code, syms, start_dt, end_dt, init_cap, comm, slip, reb, bench)
+                                # Human-visible charts
+                                st.plotly_chart(fig1, use_container_width=True)
+                                if fig2 is not None:
+                                    st.plotly_chart(fig2, use_container_width=True)
+                                st.json(metrics)
+                                # Agent-readable summary appended to chat
+                                st.session_state.chat.append({
+                                    "role": "assistant",
+                                    "content": json.dumps({
+                                        "tool": "backtest_result",
+                                        "symbols": syms,
+                                        "start": pd.to_datetime(start_dt).isoformat(),
+                                        "end": pd.to_datetime(end_dt).isoformat(),
+                                        "metrics": metrics,
+                                    })
+                                })
+                        except Exception as e:
+                            st.error(f"Backtest failed: {e}")
 
         # Persist/restore chat history
         c1, c2 = st.columns(2)
