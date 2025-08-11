@@ -11,37 +11,43 @@ A lean UI to:
 Usage from repo root (or portfolio_lib directory):
     streamlit run -m portfolio_lib.ui.strategy_workbench
 """
+
 from __future__ import annotations
 
-import textwrap
 import json
+import textwrap
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Any, List, Tuple, Type
-from pydantic import BaseModel
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 
 from portfolio_lib.models.strategy import BacktestConfig, StrategyConfig
 from portfolio_lib.services.backtesting.backtester import BacktestingService
 from portfolio_lib.services.data.yfinance import YFinanceDataService
 from portfolio_lib.services.strategy.base import BaseStrategy  # noqa: F401
+
 try:
     # Prefer relative import when run as a module
     from .agent_tools import (
         ensure_custom_pkg,
+        instantiate_strategy,
         list_available_strategies,
         read_strategy_source,
         validate_strategy,
         write_new_strategy,
-        instantiate_strategy,
     )
 except Exception:
     # Fallback: add package root to sys.path and import absolute
     import os
     import sys
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+    sys.path.append(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    )
     import importlib
+
     _agt = importlib.import_module("portfolio_lib.ui.agent_tools")
     ensure_custom_pkg = getattr(_agt, "ensure_custom_pkg")
     list_available_strategies = getattr(_agt, "list_available_strategies")
@@ -56,6 +62,7 @@ except Exception:
 # Tool schemas for LangChain tool-calling
 class RegisterStrategy(BaseModel):
     """Register a new strategy class to custom folder."""
+
     class_name: str
     code: str
     strategy_name: Optional[str] = None
@@ -63,6 +70,7 @@ class RegisterStrategy(BaseModel):
 
 class BacktestStrategy(BaseModel):
     """Backtest inline strategy code and return metrics."""
+
     code: str
     symbols: Optional[List[str]] = None
     years: Optional[int] = None
@@ -77,12 +85,17 @@ class BacktestStrategy(BaseModel):
 
 def _plot_equity_curve(res) -> Any:
     import importlib
-    go = importlib.import_module('plotly.graph_objects')
+
+    go = importlib.import_module("plotly.graph_objects")
     # local import ensures optional dependency
-    s = pd.Series(res.portfolio_values, index=pd.to_datetime(res.timestamps)).sort_index()
+    s = pd.Series(
+        res.portfolio_values, index=pd.to_datetime(res.timestamps)
+    ).sort_index()
     s = s / float(s.iloc[0]) if len(s) else s
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines", name=res.strategy_name))
+    fig.add_trace(
+        go.Scatter(x=s.index, y=s.values, mode="lines", name=res.strategy_name)
+    )
     fig.update_layout(title="Growth of $1", xaxis_title="Date", yaxis_title="Growth")
     return fig
 
@@ -92,7 +105,11 @@ def _build_close_frame(price_history: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     for sym, df in price_history.items():
         if df is None or df.empty:
             continue
-        col = "close" if "close" in df.columns else ("Close" if "Close" in df.columns else None)
+        col = (
+            "close"
+            if "close" in df.columns
+            else ("Close" if "Close" in df.columns else None)
+        )
         if not col:
             continue
         s = pd.Series(df[col].values, index=pd.to_datetime(df.index), name=sym)
@@ -103,9 +120,15 @@ def _build_close_frame(price_history: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     return closes
 
 
-def _plot_growth_with_benchmark(res, price_history: Dict[str, pd.DataFrame], benchmark: str, initial_holdings: Dict[str, float]) -> Optional[Any]:
+def _plot_growth_with_benchmark(
+    res,
+    price_history: Dict[str, pd.DataFrame],
+    benchmark: str,
+    initial_holdings: Dict[str, float],
+) -> Optional[Any]:
     import importlib
-    go = importlib.import_module('plotly.graph_objects')
+
+    go = importlib.import_module("plotly.graph_objects")
     idx = pd.to_datetime(res.timestamps)
     if len(idx) == 0:
         return None
@@ -134,16 +157,27 @@ def _plot_growth_with_benchmark(res, price_history: Dict[str, pd.DataFrame], ben
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=idx, y=strat_g.values, mode="lines", name="Strategy"))
     if len(bench_g) and bench_g.notna().any():
-        fig.add_trace(go.Scatter(x=idx, y=bench_g.values, mode="lines", name="Benchmark"))
+        fig.add_trace(
+            go.Scatter(x=idx, y=bench_g.values, mode="lines", name="Benchmark")
+        )
     if len(base_g) and base_g.notna().any():
-        fig.add_trace(go.Scatter(x=idx, y=base_g.values, mode="lines", name="Baseline (B&H initial)"))
-    fig.update_layout(title="Growth of $1 (Strategy vs Benchmark vs Baseline)", xaxis_title="Date", yaxis_title="Growth")
+        fig.add_trace(
+            go.Scatter(
+                x=idx, y=base_g.values, mode="lines", name="Baseline (B&H initial)"
+            )
+        )
+    fig.update_layout(
+        title="Growth of $1 (Strategy vs Benchmark vs Baseline)",
+        xaxis_title="Date",
+        yaxis_title="Growth",
+    )
     return fig
 
 
 def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
     import importlib
-    go = importlib.import_module('plotly.graph_objects')
+
+    go = importlib.import_module("plotly.graph_objects")
     idx = pd.to_datetime(res.timestamps)
     if not getattr(res, "holdings_history", None) or len(idx) == 0:
         return None
@@ -220,13 +254,19 @@ def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[A
                 line_width=1,
             )
         )
-    fig.update_layout(title="Portfolio Allocation", xaxis_title="Date", yaxis_title="Weight", yaxis=dict(range=[0, 1]))
+    fig.update_layout(
+        title="Portfolio Allocation",
+        xaxis_title="Date",
+        yaxis_title="Weight",
+        yaxis=dict(range=[0, 1]),
+    )
     return fig
 
 
 def _plot_trades(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
     import importlib
-    go = importlib.import_module('plotly.graph_objects')
+
+    go = importlib.import_module("plotly.graph_objects")
     trades = getattr(res, "executed_trades", [])
     if not trades:
         return None
@@ -234,9 +274,7 @@ def _plot_trades(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
     df_tr = pd.DataFrame(trades)
     if "symbol" not in df_tr.columns:
         return None
-    counts = (
-        df_tr["symbol"].value_counts() if not df_tr.empty else pd.Series(dtype=int)
-    )
+    counts = df_tr["symbol"].value_counts() if not df_tr.empty else pd.Series(dtype=int)
     sym = None
     for s in counts.index.tolist():
         if s in price_history and not price_history[s].empty:
@@ -263,9 +301,25 @@ def _plot_trades(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
             sells_x.append(ts)
             sells_y.append(px)
     if buys_x:
-        fig.add_trace(go.Scatter(x=buys_x, y=buys_y, mode="markers", name="BUY", marker=dict(color="green", symbol="triangle-up")))
+        fig.add_trace(
+            go.Scatter(
+                x=buys_x,
+                y=buys_y,
+                mode="markers",
+                name="BUY",
+                marker=dict(color="green", symbol="triangle-up"),
+            )
+        )
     if sells_x:
-        fig.add_trace(go.Scatter(x=sells_x, y=sells_y, mode="markers", name="SELL", marker=dict(color="red", symbol="triangle-down")))
+        fig.add_trace(
+            go.Scatter(
+                x=sells_x,
+                y=sells_y,
+                mode="markers",
+                name="SELL",
+                marker=dict(color="red", symbol="triangle-down"),
+            )
+        )
     fig.update_layout(title="Executed Trades", xaxis_title="Date", yaxis_title="Price")
     return fig
 
@@ -296,6 +350,7 @@ def _parse_tool_call(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
       - backtest_strategy: {tool, code, symbols, years? or start_date/end_date, initial_capital, commission, slippage, rebalance, benchmark}
     Returns (tool_name, payload_dict) or None.
     """
+
     def _as_obj(t: str) -> Optional[Dict[str, Any]]:
         try:
             o = json.loads(t)
@@ -321,7 +376,9 @@ def _parse_tool_call(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     return None
 
 
-def _instantiate_strategy_from_source(code: str, class_name: Optional[str] = None) -> BaseStrategy:
+def _instantiate_strategy_from_source(
+    code: str, class_name: Optional[str] = None
+) -> BaseStrategy:
     """Exec code and return an instance of the single subclass of BaseStrategy.
     If class_name is provided, use it; else auto-detect unique subclass.
     """
@@ -331,10 +388,15 @@ def _instantiate_strategy_from_source(code: str, class_name: Optional[str] = Non
     cls_candidates: List[Type[BaseStrategy]] = []
     for v in ns.values():
         try:
-            if isinstance(v, type) and issubclass(v, BaseStrategy) and v is not BaseStrategy:
+            if (
+                isinstance(v, type)
+                and issubclass(v, BaseStrategy)
+                and v is not BaseStrategy
+            ):
                 cls_candidates.append(v)
         except Exception:
             continue
+
     def _construct(cls: Type[BaseStrategy]) -> BaseStrategy:
         try:
             return cls()  # type: ignore[call-arg]
@@ -352,7 +414,9 @@ def _instantiate_strategy_from_source(code: str, class_name: Optional[str] = Non
                 return _construct(c)
         raise ValueError(f"Strategy class {class_name} not found in code")
     if len(cls_candidates) != 1:
-        raise ValueError(f"Expected exactly one BaseStrategy subclass, found {len(cls_candidates)}")
+        raise ValueError(
+            f"Expected exactly one BaseStrategy subclass, found {len(cls_candidates)}"
+        )
     return _construct(cls_candidates[0])
 
 
@@ -381,7 +445,9 @@ def _run_backtest_on_code(
         slippage=slippage,
         benchmark=benchmark,
     )
-    price_history = data.fetch_price_history(symbols, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    price_history = data.fetch_price_history(
+        symbols, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+    )
     valid = [s for s in symbols if s in price_history and not price_history[s].empty]
     if len(valid) < 2:
         raise ValueError("Not enough symbols with data to backtest")
@@ -391,8 +457,12 @@ def _run_backtest_on_code(
     cfg = StrategyConfig(name=strat.name, rebalance_frequency=rebalance)
     res = svc.run_backtest(strat, cfg, bt_cfg, initial_holdings)
 
-    growth = _plot_growth_with_benchmark(res, price_history, benchmark, initial_holdings) or _plot_equity_curve(res)
-    alloc_or_trades = _plot_allocations(res, price_history) or _plot_trades(res, price_history)
+    growth = _plot_growth_with_benchmark(
+        res, price_history, benchmark, initial_holdings
+    ) or _plot_equity_curve(res)
+    alloc_or_trades = _plot_allocations(res, price_history) or _plot_trades(
+        res, price_history
+    )
     metrics = {
         "total_return": round(res.total_return, 6),
         "annualized_return": round(res.annualized_return, 6),
@@ -408,6 +478,7 @@ def _run_backtest_on_code(
 def main():
     global st
     import streamlit as st  # type: ignore
+
     st.set_page_config(page_title="Strategy Workbench", layout="wide")
     st.title("Strategy Workbench")
 
@@ -422,14 +493,22 @@ def main():
         )
         symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
         years = st.slider("Years", 1, 10, 3)
-        initial_capital = st.number_input("Initial Capital", value=100000.0, step=1000.0)
-        commission = st.number_input("Commission", value=0.0005, step=0.0001, format="%f")
+        initial_capital = st.number_input(
+            "Initial Capital", value=100000.0, step=1000.0
+        )
+        commission = st.number_input(
+            "Commission", value=0.0005, step=0.0001, format="%f"
+        )
         slippage = st.number_input("Slippage", value=0.0002, step=0.0001, format="%f")
-        rebalance = st.selectbox("Rebalance", ["daily", "weekly", "monthly", "quarterly"], index=2)
+        rebalance = st.selectbox(
+            "Rebalance", ["daily", "weekly", "monthly", "quarterly"], index=2
+        )
         benchmark = st.text_input("Benchmark", value="QQQ")
 
         st.header("LLM Settings")
-        provider = st.selectbox("Provider", ["None", "OpenAI-compatible", "LiteLLM (LM Studio)"])
+        provider = st.selectbox(
+            "Provider", ["None", "OpenAI-compatible", "LiteLLM (LM Studio)"]
+        )
         # Default to LM Studio OpenAI-compatible endpoint
         default_base = "http://localhost:1234/v1"
         api_base = st.text_input("API Base (OpenAI-compatible)", value=default_base)
@@ -439,7 +518,9 @@ def main():
         if st.button("Refresh Models"):
             st.session_state.model_options = _fetch_models(api_base, api_key)
         model_options: List[str] = st.session_state.get("model_options", [])
-        model = st.selectbox("Model", options=(model_options or ["gpt-4o-mini"]))
+        model = st.selectbox(
+            "Model", options=(model_options or ["gpt-4o-mini"]), accept_new_options=True
+        )
 
     # Chat session state
     if "chat" not in st.session_state:
@@ -450,7 +531,9 @@ def main():
 
     with tab_chat:
         st.subheader("Constrained Strategy Builder")
-        chat_mode = st.radio("Chat Mode", ["Discuss", "Implement"], horizontal=True, key="chat_mode")
+        chat_mode = st.radio(
+            "Chat Mode", ["Discuss", "Implement"], horizontal=True, key="chat_mode"
+        )
         st.markdown(
             "Flow: 1) Acknowledge understanding of the requested strategy, 2) Preview a brief plan, 3) Emit a single JSON tool call to register the strategy."
         )
@@ -529,16 +612,28 @@ def main():
             llm = None
             tools = []
             try:
-                from langchain_core.tools import tool as lc_tool  # type: ignore
-                from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
                 # Streaming callback to Streamlit
-                class StreamHandler:
+                from langchain.callbacks.base import BaseCallbackHandler
+                from langchain_core.messages import (  # type: ignore
+                    HumanMessage,
+                    SystemMessage,
+                )
+                from langchain_core.tools import tool as lc_tool  # type: ignore
+
+                class StreamHandler(BaseCallbackHandler):
                     def __init__(self, container):
                         self.container = container
                         self.text = ""
+                        self.ignore_chat_model = True  # For LangChain compatibility
+
+                    def on_chat_model_start(self, *args, **kwargs):
+                        # No-op to suppress LangChain callback errors
+                        pass
+
                     def on_llm_new_token(self, token: str, **kwargs):
                         self.text += token
                         self.container.markdown(self.text)
+
                 # Define tools via decorators using our Pydantic schemas
                 # Capture sidebar defaults for tool fallbacks
                 defaults_local = {
@@ -552,11 +647,15 @@ def main():
                 }
 
                 @lc_tool(args_schema=RegisterStrategy)
-                def register_strategy(class_name: str, code: str, strategy_name: Optional[str] = None) -> str:
+                def register_strategy(
+                    class_name: str, code: str, strategy_name: Optional[str] = None
+                ) -> str:
                     """Save a strategy file to custom folder. Returns module path and class."""
                     if chat_mode != "Implement":
                         return "Switch to Implement mode to register strategies."
-                    mod_path, cls = write_new_strategy(class_name, strategy_name or class_name, source=code)
+                    mod_path, cls = write_new_strategy(
+                        class_name, strategy_name or class_name, source=code
+                    )
                     return f"Registered {mod_path}:{cls}"
 
                 @lc_tool(args_schema=BacktestStrategy)
@@ -577,52 +676,112 @@ def main():
                     syms = symbols if symbols else defaults_local.get("symbols", [])
                     if not syms:
                         return json.dumps({"error": "No symbols"})
-                    yrs_val = int(years) if years is not None else int(defaults_local.get("years", 3))
+                    yrs_val = (
+                        int(years)
+                        if years is not None
+                        else int(defaults_local.get("years", 3))
+                    )
                     if start_date and end_date:
                         start_dt = pd.to_datetime(start_date).to_pydatetime()
                         end_dt = pd.to_datetime(end_date).to_pydatetime()
                     else:
                         end_dt = datetime.today()
                         start_dt = end_dt - timedelta(days=365 * max(1, yrs_val))
-                    init_cap = float(initial_capital) if initial_capital is not None else float(defaults_local.get("initial_capital", 100000.0))
-                    comm = float(commission) if commission is not None else float(defaults_local.get("commission", 0.0005))
-                    slip = float(slippage) if slippage is not None else float(defaults_local.get("slippage", 0.0002))
-                    reb = str(rebalance) if rebalance is not None else str(defaults_local.get("rebalance", "monthly"))
-                    bench = str(benchmark) if benchmark is not None else str(defaults_local.get("benchmark", "QQQ"))
-                    fig1, fig2, metrics = _run_backtest_on_code(code, [str(s).upper() for s in syms], start_dt, end_dt, init_cap, comm, slip, reb, bench)
+                    init_cap = (
+                        float(initial_capital)
+                        if initial_capital is not None
+                        else float(defaults_local.get("initial_capital", 100000.0))
+                    )
+                    comm = (
+                        float(commission)
+                        if commission is not None
+                        else float(defaults_local.get("commission", 0.0005))
+                    )
+                    slip = (
+                        float(slippage)
+                        if slippage is not None
+                        else float(defaults_local.get("slippage", 0.0002))
+                    )
+                    reb = (
+                        str(rebalance)
+                        if rebalance is not None
+                        else str(defaults_local.get("rebalance", "monthly"))
+                    )
+                    bench = (
+                        str(benchmark)
+                        if benchmark is not None
+                        else str(defaults_local.get("benchmark", "QQQ"))
+                    )
+                    fig1, fig2, metrics = _run_backtest_on_code(
+                        code,
+                        [str(s).upper() for s in syms],
+                        start_dt,
+                        end_dt,
+                        init_cap,
+                        comm,
+                        slip,
+                        reb,
+                        bench,
+                    )
                     # Render charts in UI while returning JSON summary for the tool output
                     st.plotly_chart(fig1, use_container_width=True)
                     if fig2 is not None:
                         st.plotly_chart(fig2, use_container_width=True)
                     st.json(metrics)
-                    result_json = json.dumps({
-                        "tool": "backtest_result",
-                        "symbols": syms,
-                        "start": pd.to_datetime(start_dt).isoformat(),
-                        "end": pd.to_datetime(end_dt).isoformat(),
-                        "metrics": metrics,
-                    })
+                    result_json = json.dumps(
+                        {
+                            "tool": "backtest_result",
+                            "symbols": syms,
+                            "start": pd.to_datetime(start_dt).isoformat(),
+                            "end": pd.to_datetime(end_dt).isoformat(),
+                            "metrics": metrics,
+                        }
+                    )
                     # Append concise summary to chat history, too
-                    st.session_state.chat.append({"role": "assistant", "content": result_json})
+                    st.session_state.chat.append(
+                        {"role": "assistant", "content": result_json}
+                    )
                     return result_json
 
                 tools = [register_strategy, backtest_strategy]
                 # Provider selection
                 if provider == "OpenAI-compatible":
                     from langchain_openai import ChatOpenAI  # type: ignore
-                    llm = ChatOpenAI(model=model, openai_api_key=api_key or "", openai_api_base=api_base or None, streaming=True)
+
+                    llm = ChatOpenAI(
+                        model=model,
+                        openai_api_key=api_key or "",
+                        openai_api_base=api_base or None,
+                        streaming=True,
+                    )
                 elif provider == "LiteLLM (LM Studio)":
                     try:
                         from langchain_litellm import ChatLiteLLM  # type: ignore
-                        llm = ChatLiteLLM(model=model, api_key=api_key or "sk-ignored", base_url=api_base or "http://localhost:1234/v1", streaming=True)
+
+                        llm = ChatLiteLLM(
+                            model=model,
+                            api_key=api_key or "sk-ignored",
+                            base_url=api_base or "http://localhost:1234/v1",
+                            streaming=True,
+                        )
                     except Exception:
-                        from langchain_community.chat_models import ChatLiteLLM  # type: ignore
-                        llm = ChatLiteLLM(model=model, api_key=api_key or "sk-ignored", base_url=api_base or "http://localhost:1234/v1", streaming=True)
+                        from langchain_community.chat_models import (
+                            ChatLiteLLM,  # type: ignore
+                        )
+
+                        llm = ChatLiteLLM(
+                            model=model,
+                            api_key=api_key or "sk-ignored",
+                            base_url=api_base or "http://localhost:1234/v1",
+                            streaming=True,
+                        )
             except Exception:
                 llm = None
 
             if llm is None:
-                st.warning("LangChain back-end not available. Install langchain and a provider.")
+                st.warning(
+                    "LangChain back-end not available. Install langchain and a provider."
+                )
             else:
                 with st.spinner("Asking model…"):
                     # Streaming container for assistant text
@@ -635,48 +794,97 @@ def main():
                         handler = None
                     # Bind tools
                     try:
-                        llm_with_tools = llm.bind_tools(tools) if hasattr(llm, "bind_tools") else llm
+                        llm_with_tools = (
+                            llm.bind_tools(tools) if hasattr(llm, "bind_tools") else llm
+                        )
                     except Exception:
                         llm_with_tools = llm
                     # Build messages
-                    msgs = [SystemMessage(content=sys_prompt), HumanMessage(content=user_input)]
+                    msgs = [
+                        SystemMessage(content=sys_prompt),
+                        HumanMessage(content=user_input),
+                    ]
+                    # --- Streaming with tool-call handling ---
+                    chunks = []
+                    text = ""
                     try:
-                        resp = llm_with_tools.invoke(msgs, config={"callbacks": [handler]} if handler else None)  # type: ignore
-                    except Exception:
-                        # Fall back to non-streaming
-                        resp = llm_with_tools.invoke(msgs)  # type: ignore
-                    # Display assistant text content (if any)
-                    try:
-                        content_text = getattr(resp, "content", None)
-                        if content_text:
-                            # Ensure full text is shown (in case streaming missed final delta)
-                            stream_box.markdown(str(content_text))
-                            st.session_state.chat.append({"role": "assistant", "content": str(content_text)})
-                    except Exception:
-                        pass
-                    # Execute any tool calls
-                    try:
-                        tool_calls = getattr(resp, "tool_calls", []) or []
-                    except Exception:
-                        tool_calls = []
-                # Process tool calls after showing assistant text
-                for tc in tool_calls:
-                    name = getattr(tc, "name", None) or tc.get("name") if isinstance(tc, dict) else None
-                    args = getattr(tc, "args", None) or tc.get("args") if isinstance(tc, dict) else None
-                    if not name:
-                        continue
-                    try:
-                        if name == "register_strategy":
-                            result = tools[0].invoke(args)
-                            st.success(str(result))
-                        elif name == "backtest_strategy":
-                            result = tools[1].invoke(args)
-                            # backtest tool already renders; still show brief status
-                            st.info("Backtest complete")
-                        else:
-                            st.warning(f"Unknown tool: {name}")
+                        for chunk in llm_with_tools.stream(msgs):
+                            chunks.append(chunk)
+                            token = getattr(chunk, "content", str(chunk))
+                            text += token
+                            stream_box.markdown(text)
                     except Exception as e:
-                        st.error(f"Tool '{name}' failed: {e}")
+                        stream_box.markdown(f"Streaming error: {e}")
+                    final_chunk = chunks[-1] if chunks else None
+                    if text:
+                        # Insert streamed assistant message into chat
+                        st.session_state.chat.append({"role": "assistant", "content": text})
+
+                    # First, try provider-native tool calls (if any)
+                    executed_any_tool = False
+                    native_tool_calls = []
+                    if final_chunk is not None:
+                        try:
+                            native_tool_calls = getattr(final_chunk, "tool_calls", []) or []
+                        except Exception:
+                            native_tool_calls = []
+                    for tc in native_tool_calls:
+                        name = (
+                            getattr(tc, "name", None) or tc.get("name") if isinstance(tc, dict) else None
+                        )
+                        args = (
+                            getattr(tc, "args", None) or tc.get("args") if isinstance(tc, dict) else None
+                        )
+                        if not name:
+                            continue
+                        with st.expander(f"Tool call detected: {name}"):
+                            st.caption("Arguments")
+                            try:
+                                st.json(args if isinstance(args, dict) else json.loads(args or "{}"))
+                            except Exception:
+                                st.write(args)
+                        try:
+                            with st.spinner(f"Executing tool: {name}…"):
+                                if name == "register_strategy":
+                                    result = tools[0].invoke(args)
+                                    st.success(str(result))
+                                    st.session_state.chat.append({"role": "assistant", "content": f"Tool result: {result}"})
+                                elif name == "backtest_strategy":
+                                    result = tools[1].invoke(args)
+                                    st.info("Backtest complete")
+                                    st.session_state.chat.append({"role": "assistant", "content": "Backtest complete"})
+                                else:
+                                    st.warning(f"Unknown tool: {name}")
+                                    st.session_state.chat.append({"role": "assistant", "content": f"Unknown tool: {name}"})
+                                executed_any_tool = True
+                        except Exception as e:
+                            st.error(f"Tool '{name}' failed: {e}")
+                            st.session_state.chat.append({"role": "assistant", "content": f"Tool '{name}' failed: {e}"})
+
+                    # Fallback: parse JSON tool call embedded in text
+                    if not executed_any_tool:
+                        parsed = _parse_tool_call(text)
+                        if parsed is not None:
+                            tool_name, payload = parsed
+                            payload_args = {k: v for k, v in payload.items() if k != "tool"}
+                            with st.expander(f"JSON tool call detected: {tool_name}"):
+                                st.code(json.dumps(payload, indent=2))
+                            try:
+                                with st.spinner(f"Executing tool: {tool_name}…"):
+                                    if tool_name == "register_strategy":
+                                        result = tools[0].invoke(payload_args)
+                                        st.success(str(result))
+                                        st.session_state.chat.append({"role": "assistant", "content": f"Tool result: {result}"})
+                                        executed_any_tool = True
+                                    elif tool_name == "backtest_strategy":
+                                        result = tools[1].invoke(payload_args)
+                                        st.info("Backtest complete")
+                                        st.session_state.chat.append({"role": "assistant", "content": "Backtest complete"})
+                                        executed_any_tool = True
+                                    else:
+                                        st.warning(f"Unknown tool: {tool_name}")
+                            except Exception as e:
+                                st.error(f"Tool '{tool_name}' failed: {e}")
 
         # Persist/restore chat history
         c1, c2 = st.columns(2)
@@ -689,7 +897,9 @@ def main():
                     mime="application/json",
                 )
         with c2:
-            uploaded = st.file_uploader("Upload Chat JSON", type=["json"], accept_multiple_files=False)
+            uploaded = st.file_uploader(
+                "Upload Chat JSON", type=["json"], accept_multiple_files=False
+            )
             if uploaded is not None:
                 try:
                     st.session_state.chat = json.loads(uploaded.read().decode("utf-8"))
@@ -697,14 +907,26 @@ def main():
                 except Exception as e:
                     st.error(f"Failed to load chat: {e}")
 
-
     with tab_backtest:
         st.subheader("Validate / Load & Backtest")
         # Strategy picker
         names = list_available_strategies()
         colp1, colp2 = st.columns([3, 1])
         with colp1:
-            module_cls = st.selectbox("Strategy", options=names, index=(names.index(next((n for n in names if n.endswith(":MomentumStrategy")), names[0])) if names else 0))
+            module_cls = st.selectbox(
+                "Strategy",
+                options=names,
+                index=(
+                    names.index(
+                        next(
+                            (n for n in names if n.endswith(":MomentumStrategy")),
+                            names[0],
+                        )
+                    )
+                    if names
+                    else 0
+                ),
+            )
         with colp2:
             if st.button("Refresh List"):
                 names = list_available_strategies()
@@ -737,35 +959,63 @@ def main():
                     benchmark=benchmark,
                 )
                 # initial holdings: equal capital at first price available
-                price_history = data.fetch_price_history(symbols, bt_cfg.start_date.strftime("%Y-%m-%d"), bt_cfg.end_date.strftime("%Y-%m-%d"))
-                valid_syms = [s for s in symbols if s in price_history and not price_history[s].empty]
+                price_history = data.fetch_price_history(
+                    symbols,
+                    bt_cfg.start_date.strftime("%Y-%m-%d"),
+                    bt_cfg.end_date.strftime("%Y-%m-%d"),
+                )
+                valid_syms = [
+                    s
+                    for s in symbols
+                    if s in price_history and not price_history[s].empty
+                ]
                 if len(valid_syms) < 2:
                     st.error("Not enough symbols with data.")
                 else:
-                    start_prices = {s: float(price_history[s]["close"].iloc[0]) for s in valid_syms}
+                    start_prices = {
+                        s: float(price_history[s]["close"].iloc[0]) for s in valid_syms
+                    }
                     cap_per = initial_capital / len(valid_syms)
-                    initial_holdings = {s: cap_per / start_prices[s] for s in valid_syms}
+                    initial_holdings = {
+                        s: cap_per / start_prices[s] for s in valid_syms
+                    }
 
-                    strat_cfg = StrategyConfig(name=strat.name, rebalance_frequency=rebalance)
-                    res = backtester.run_backtest(strat, strat_cfg, bt_cfg, initial_holdings)
+                    strat_cfg = StrategyConfig(
+                        name=strat.name, rebalance_frequency=rebalance
+                    )
+                    res = backtester.run_backtest(
+                        strat, strat_cfg, bt_cfg, initial_holdings
+                    )
 
                     # Plots
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.plotly_chart(_plot_growth_with_benchmark(res, price_history, benchmark, initial_holdings) or _plot_equity_curve(res), use_container_width=True)
+                        st.plotly_chart(
+                            _plot_growth_with_benchmark(
+                                res, price_history, benchmark, initial_holdings
+                            )
+                            or _plot_equity_curve(res),
+                            use_container_width=True,
+                        )
                     with c2:
-                        st.plotly_chart(_plot_allocations(res, price_history) or _plot_trades(res, price_history), use_container_width=True)
+                        st.plotly_chart(
+                            _plot_allocations(res, price_history)
+                            or _plot_trades(res, price_history),
+                            use_container_width=True,
+                        )
 
                     st.markdown("### Metrics")
-                    st.json({
-                        "total_return": round(res.total_return, 4),
-                        "annualized_return": round(res.annualized_return, 4),
-                        "volatility": round(res.volatility, 4),
-                        "sharpe_ratio": round(res.sharpe_ratio, 4),
-                        "max_drawdown": round(res.max_drawdown, 4),
-                        "benchmark_return": round(res.benchmark_return, 4),
-                        "total_trades": int(res.total_trades),
-                    })
+                    st.json(
+                        {
+                            "total_return": round(res.total_return, 4),
+                            "annualized_return": round(res.annualized_return, 4),
+                            "volatility": round(res.volatility, 4),
+                            "sharpe_ratio": round(res.sharpe_ratio, 4),
+                            "max_drawdown": round(res.max_drawdown, 4),
+                            "benchmark_return": round(res.benchmark_return, 4),
+                            "total_trades": int(res.total_trades),
+                        }
+                    )
 
                     # Trades table with scores
                     if getattr(res, "executed_trades", None):
@@ -774,12 +1024,36 @@ def main():
                         # tidy columns
                         if "timestamp" in df_tr.columns:
                             df_tr["timestamp"] = pd.to_datetime(df_tr["timestamp"])
-                        show_cols = [c for c in ["timestamp","symbol","action","price","quantity_shares","weight_fraction","gross_value","commission","slippage","total_cost","net_cash_delta","score","reason"] if c in df_tr.columns]
-                        st.dataframe(df_tr[show_cols].sort_values("timestamp"), use_container_width=True, hide_index=True)
+                        show_cols = [
+                            c
+                            for c in [
+                                "timestamp",
+                                "symbol",
+                                "action",
+                                "price",
+                                "quantity_shares",
+                                "weight_fraction",
+                                "gross_value",
+                                "commission",
+                                "slippage",
+                                "total_cost",
+                                "net_cash_delta",
+                                "score",
+                                "reason",
+                            ]
+                            if c in df_tr.columns
+                        ]
+                        st.dataframe(
+                            df_tr[show_cols].sort_values("timestamp"),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
                     # Rebalance diagnostics
                     if getattr(res, "rebalance_details", None):
-                        with st.expander("Rebalance diagnostics (weights / target / scores)"):
+                        with st.expander(
+                            "Rebalance diagnostics (weights / target / scores)"
+                        ):
                             try:
                                 st.json(res.rebalance_details)
                             except Exception:
@@ -802,13 +1076,17 @@ def main():
                 st.error(str(e))
                 src = ""
             code_area = st.text_area("Source", value=src, height=400)
-        class_copy = st.text_input("Save as Class Name (in custom)", value="EditedStrategy")
+        class_copy = st.text_input(
+            "Save as Class Name (in custom)", value="EditedStrategy"
+        )
         if st.button("Save Copy to Custom"):
             if not code_area:
                 st.error("No source to save.")
             else:
                 try:
-                    modp, cls = write_new_strategy(class_copy, class_copy, source=code_area)
+                    modp, cls = write_new_strategy(
+                        class_copy, class_copy, source=code_area
+                    )
                     st.success(f"Saved {modp}:{cls}")
                 except Exception as e:
                     st.error(str(e))
