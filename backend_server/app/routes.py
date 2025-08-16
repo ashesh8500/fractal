@@ -24,6 +24,15 @@ from .schemas import (
     PortfolioUpdate,
     PortfolioResponse,
     StrategyExecuteRequest,
+    # Strategy LLM integration
+    StrategyCodeRequest,
+    StrategyValidationResponse,
+    StrategyRegisterRequest,
+    StrategyRegisterResponse,
+    StrategyListResponse,
+    StrategySourceResponse,
+    InlineBacktestRequest,
+    InlineBacktestResponse,
     # auth schemas
     UserCreate,
     UserResponse,
@@ -89,65 +98,64 @@ pwd_context = _init_pwd_context()
 # endpoint that uses the configured DataService via DI and returns a stable,
 # typed shape that mirrors the frontend's PricePoint.
 try:
-    from portfolio_lib.portfolio_lib.config import get_data_service
+    # Correct import path (package root is 'portfolio_lib')
+    from portfolio_lib.config import get_data_service  # type: ignore
 except Exception:
     get_data_service = None  # If portfolio_lib is not available, we will error on use
 
 # Fallback data service if DI is unavailable: yfinance (from portfolio_lib)
 try:
-    from portfolio_lib.portfolio_lib.services.data.yfinance import (
+    from portfolio_lib.services.data.yfinance import (
         YFinanceDataService,  # type: ignore
     )
 except Exception:
     YFinanceDataService = None  # type: ignore
+try:
+    from portfolio_lib.ui.agent_tools import (  # type: ignore
+        list_available_strategies,
+        read_strategy_source,
+        validate_strategy,
+        write_new_strategy,
+    )
+except Exception:
+    # Provide graceful degradation if tooling missing
+    list_available_strategies = None  # type: ignore
+    read_strategy_source = None  # type: ignore
+    validate_strategy = None  # type: ignore
+    write_new_strategy = None  # type: ignore
 
 
-# Local fallback using yfinance directly to ensure endpoint works without portfolio_lib
 class LocalYFinanceFallback:
+    """Lightweight local fallback using yfinance directly if DI/provider not available."""
+
     def __init__(self) -> None:
-        try:
-            import yfinance as yf  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(f"yfinance not installed: {exc}")
+        import yfinance as yf  # type: ignore
+
         self.yf = yf
 
-    def fetch_price_history(
-        self, symbols: List[str], start_date: str, end_date: str
-    ) -> Dict[str, Any]:
-        import pandas as pd  # type: ignore
-
+    def fetch_price_history(self, symbols: List[str], start_date: str, end_date: str) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
-        start = start_date
-        end = end_date
-
-        # yfinance can fetch multiple symbols; however, handle one-by-one for simpler normalization
+        try:
+            import pandas as pd  # type: ignore
+        except Exception:
+            pd = None  # type: ignore
         for sym in symbols:
             try:
                 df = self.yf.download(
                     sym,
-                    start=start,
-                    end=end,
+                    start=start_date,
+                    end=end_date,
                     progress=False,
                     auto_adjust=False,
                     group_by="column",
                 )
-                # Ensure DataFrame
-                if isinstance(df, pd.DataFrame) and not df.empty:
+                if pd is not None and isinstance(df, pd.DataFrame):
                     out[sym] = df
                 else:
-                    out[sym] = pd.DataFrame()
+                    out[sym] = df
             except Exception:
-                out[sym] = self._empty_df()
+                out[sym] = []
         return out
-
-    @staticmethod
-    def _empty_df():
-        try:
-            import pandas as pd  # type: ignore
-
-            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-        except Exception:
-            return []  # last resort
 
     def fetch_current_prices(self, symbols: List[str]) -> Dict[str, float]:
         prices: Dict[str, float] = {}
@@ -155,13 +163,11 @@ class LocalYFinanceFallback:
             try:
                 t = self.yf.Ticker(sym)
                 info = t.fast_info if hasattr(t, "fast_info") else {}
-                price = None
-                if info:
-                    price = (
-                        info.get("last_price")
-                        or info.get("last_trade")
-                        or info.get("regular_market_price")
-                    )
+                price = (
+                    info.get("last_price")
+                    or info.get("last_trade")
+                    or info.get("regular_market_price")
+                )
                 if price is None:
                     hist = t.history(period="1d")
                     if not hist.empty:
@@ -302,6 +308,27 @@ def handle_result(result, success_status: int = 200):
 
     status_code = status_map.get(error.error_type, 500)
     raise HTTPException(status_code=status_code, detail=error.to_dict())
+
+
+def _compute_drawdowns_safe(values):
+    """Compute drawdown series from cumulative portfolio values.
+    Returns list of fractional drawdowns (0.. negative values) same length as input.
+    Gracefully handles bad inputs.
+    """
+    dd = []
+    peak = None
+    for v in values or []:
+        try:
+            fv = float(v)
+        except Exception:
+            fv = float('nan')
+        if peak is None or (fv == fv and fv > peak):  # fv == fv filters NaN
+            peak = fv
+        if peak is None or peak <= 0 or fv != fv:
+            dd.append(0.0)
+        else:
+            dd.append((fv / peak) - 1.0)
+    return dd
 
 
 @api_router.post("/portfolios", response_model=PortfolioResponse, status_code=201)
@@ -802,15 +829,17 @@ async def get_market_data_history(
         if not has_pandas:
             return rows
         try:
-            if isinstance(df_obj, pd.Series):
+            if not has_pandas or pd is None:  # type: ignore
+                return rows
+            if isinstance(df_obj, pd.Series):  # type: ignore[attr-defined]
                 df = df_obj.to_frame()
-            elif isinstance(df_obj, pd.DataFrame):
+            elif isinstance(df_obj, pd.DataFrame):  # type: ignore[attr-defined]
                 df = df_obj
             else:
                 return rows
 
             # Ensure index is datetime-like; if not, try to parse
-            if not isinstance(df.index, pd.DatetimeIndex):
+            if not isinstance(df.index, pd.DatetimeIndex):  # type: ignore[attr-defined]
                 try:
                     df = df.copy()
                     df.index = pd.to_datetime(df.index, errors="coerce")
@@ -819,7 +848,7 @@ async def get_market_data_history(
                     pass
 
             # Handle MultiIndex columns: typical yfinance group_by='ticker'
-            if isinstance(df.columns, pd.MultiIndex):
+            if isinstance(df.columns, pd.MultiIndex):  # type: ignore[attr-defined]
                 # Try to select symbol level
                 level_hit = None
                 for lvl in range(df.columns.nlevels):
@@ -836,14 +865,15 @@ async def get_market_data_history(
                     except Exception:
                         try:
                             tmp = df.copy()
-                            tmp.columns = tmp.columns.swaplevel(0, level_hit)
+                            if hasattr(tmp.columns, "swaplevel"):
+                                tmp.columns = tmp.columns.swaplevel(0, level_hit)  # type: ignore[attr-defined]
                             df = tmp.xs(sym, axis=1, level=0, drop_level=True)
                         except Exception:
                             # if cannot slice, attempt to flatten and continue best-effort
                             pass
 
             # If still MultiIndex, flatten
-            if isinstance(df.columns, pd.MultiIndex):
+            if isinstance(df.columns, pd.MultiIndex):  # type: ignore[attr-defined]
                 df = df.copy()
                 df.columns = [
                     "_".join([str(p) for p in tup if p is not None])
@@ -882,25 +912,28 @@ async def get_market_data_history(
             # Iterate rows safely
             for idx, row in df.iterrows():
                 try:
-                    ts = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
+                    ts = getattr(idx, "date", lambda: None)()
+                    if ts:
+                        ts = ts.isoformat()
+                    else:
+                        ts = str(idx)
                 except Exception:
                     ts = str(idx)
                 o = _to_float(row[c_open]) if c_open and c_open in row else None
                 h = _to_float(row[c_high]) if c_high and c_high in row else None
-                l = _to_float(row[c_low]) if c_low and c_low in row else None
+                low_val = _to_float(row[c_low]) if c_low and c_low in row else None
                 c = _to_float(row[c_close]) if c_close and c_close in row else None
                 v = _to_int(row[c_volume]) if c_volume and c_volume in row else 0
 
                 # require core OHLC fields
-                if None in (o, h, l, c):
+                if None in (o, h, low_val, c):
                     continue
-
                 rows.append(
                     {
                         "timestamp": ts,
                         "open": o,
                         "high": h,
-                        "low": l,
+                        "low": low_val,
                         "close": c,
                         "volume": v,
                     }
@@ -1007,3 +1040,181 @@ async def get_market_data_history(
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "portfolio-backend"}
+
+
+# -----------------------
+# Strategy dynamic strategy endpoints
+# -----------------------
+try:
+    from portfolio_lib.services.backtesting.backtester import BacktestingService  # type: ignore
+    from portfolio_lib.models.strategy import BacktestConfig, StrategyConfig  # type: ignore
+except Exception:
+    BacktestingService = None  # type: ignore
+    BacktestConfig = None  # type: ignore
+    StrategyConfig = None  # type: ignore
+
+
+def _strategies_enabled() -> bool:
+    return all(
+        x is not None
+        for x in [
+            list_available_strategies,
+            read_strategy_source,
+            validate_strategy,
+            write_new_strategy,
+        ]
+    )
+
+
+@api_router.get("/strategies", response_model=StrategyListResponse)
+async def list_strategies():
+    if not _strategies_enabled():
+        raise HTTPException(status_code=503, detail="Strategy tooling unavailable")
+    try:
+        return {"strategies": list_available_strategies()}  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed listing strategies: {e}")
+
+
+@api_router.get("/strategies/source")
+async def get_strategy_source(module: str) -> StrategySourceResponse:
+    if not _strategies_enabled():
+        raise HTTPException(status_code=503, detail="Strategy tooling unavailable")
+    try:
+        if read_strategy_source is None:
+            raise RuntimeError("read_strategy_source missing")
+        src = read_strategy_source(module)
+        return StrategySourceResponse(module=module, source=src)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.post("/strategies/validate", response_model=StrategyValidationResponse)
+async def validate_strategy_code(body: StrategyCodeRequest):
+    if not _strategies_enabled():
+        return StrategyValidationResponse(ok=False, message="Strategy tooling unavailable")
+    # Minimal sandbox: exec code and detect BaseStrategy subclass
+    try:
+        namespace: dict = {}
+        exec(body.code, namespace, namespace)
+        # Find subclasses
+        from portfolio_lib.services.strategy.base import BaseStrategy  # type: ignore
+        candidates = []
+        for v in namespace.values():
+            try:
+                if isinstance(v, type) and issubclass(v, BaseStrategy) and v is not BaseStrategy:
+                    candidates.append(v)
+            except Exception:
+                continue
+        if body.class_name:
+            candidates = [c for c in candidates if c.__name__ == body.class_name]
+        if len(candidates) != 1:
+            return StrategyValidationResponse(
+                ok=False,
+                message=f"Expected exactly one BaseStrategy subclass, found {len(candidates)}",
+            )
+        cls = candidates[0]
+        return StrategyValidationResponse(
+            ok=True, message="OK", module=None, class_name=cls.__name__
+        )
+    except Exception as e:
+        return StrategyValidationResponse(ok=False, message=str(e))
+
+
+@api_router.post("/strategies/register", response_model=StrategyRegisterResponse)
+async def register_strategy(body: StrategyRegisterRequest):
+    if not _strategies_enabled():
+        return StrategyRegisterResponse(ok=False, message="Strategy tooling unavailable")
+    try:
+        if write_new_strategy is None:
+            raise RuntimeError("write_new_strategy not available")
+        module_path, cls = write_new_strategy(
+            body.class_name, strategy_name=body.strategy_name, source=body.code
+        )  # type: ignore
+        return StrategyRegisterResponse(
+            ok=True, module_path=module_path, class_name=cls, message="Registered"
+        )
+    except FileExistsError as fe:
+        return StrategyRegisterResponse(ok=False, message=str(fe))
+    except Exception as e:
+        return StrategyRegisterResponse(ok=False, message=str(e))
+
+
+@api_router.post("/strategies/backtest-inline", response_model=InlineBacktestResponse)
+async def inline_backtest(body: InlineBacktestRequest):
+    if not _strategies_enabled():
+        return InlineBacktestResponse(ok=False, message="Strategy tooling unavailable")
+    if BacktestingService is None or YFinanceDataService is None:
+        return InlineBacktestResponse(ok=False, message="Backtesting services unavailable")
+    try:
+        # Exec and instantiate
+        ns: dict = {}
+        exec(body.code, ns, ns)
+        from portfolio_lib.services.strategy.base import BaseStrategy  # type: ignore
+        strat_cls = [
+            v
+            for v in ns.values()
+            if isinstance(v, type) and issubclass(v, BaseStrategy) and v is not BaseStrategy
+        ]
+        if len(strat_cls) != 1:
+            return InlineBacktestResponse(
+                ok=False,
+                message=f"Expected exactly one BaseStrategy subclass, found {len(strat_cls)}",
+            )
+        strat = strat_cls[0]()  # type: ignore
+        # Data
+        ds = YFinanceDataService()  # type: ignore
+        svc = BacktestingService(ds)  # type: ignore
+        if BacktestConfig is None:
+            return InlineBacktestResponse(ok=False, message="BacktestConfig unavailable")
+        bt_cfg = BacktestConfig(  # type: ignore
+            start_date=body.start_date,
+            end_date=body.end_date,
+            initial_capital=body.initial_capital,
+            commission=body.commission,
+            slippage=body.slippage,
+            benchmark=body.benchmark,
+        )
+        # Simple equal-weight initial holdings
+        history = ds.fetch_price_history(
+            body.symbols,
+            body.start_date.strftime("%Y-%m-%d"),
+            body.end_date.strftime("%Y-%m-%d"),
+        )
+        valid = [s for s, df in history.items() if hasattr(df, 'empty') and not df.empty]
+        if len(valid) < 2:
+            return InlineBacktestResponse(ok=False, message="Need >=2 symbols with data")
+        cap_per = body.initial_capital / len(valid)
+        start_prices = {s: float(history[s]['close'].iloc[0]) for s in valid}
+        initial_holdings = {s: cap_per / start_prices[s] for s in valid}
+        if StrategyConfig is None:
+            return InlineBacktestResponse(ok=False, message="StrategyConfig unavailable")
+        strat_cfg = StrategyConfig(  # type: ignore
+            name=getattr(strat, 'name', strat.__class__.__name__),
+            rebalance_frequency=body.rebalance,
+        )
+        res = svc.run_backtest(strat, strat_cfg, bt_cfg, initial_holdings)  # type: ignore
+        return InlineBacktestResponse(
+            ok=True,
+            strategy_name=strat_cfg.name,
+            total_return=float(res.total_return),
+            annualized_return=float(res.annualized_return),
+            volatility=float(res.volatility),
+            sharpe_ratio=float(res.sharpe_ratio),
+            max_drawdown=float(res.max_drawdown),
+            benchmark_return=float(res.benchmark_return),
+            alpha=float(getattr(res, 'alpha', float('nan'))),
+            beta=float(getattr(res, 'beta', float('nan'))),
+            total_trades=int(res.total_trades),
+            portfolio_values=[float(x) for x in res.portfolio_values],
+            timestamps=[str(t) for t in res.timestamps],
+            executed_trades=getattr(res, 'executed_trades', None),
+            daily_returns=[float(x) for x in getattr(res, 'daily_returns', [])],
+            drawdowns=[float(x) for x in _compute_drawdowns_safe(res.portfolio_values)],
+            benchmark_values=[float(x) for x in getattr(res, 'benchmark_values', [])] if hasattr(res, 'benchmark_values') else None,
+            holdings_history=getattr(res, 'holdings_history', None),
+            rebalance_details=getattr(res, 'rebalance_details', None),
+            allocation_weights=getattr(res, 'allocation_weights', None),
+        )
+    except Exception as e:
+        return InlineBacktestResponse(ok=False, message=str(e))

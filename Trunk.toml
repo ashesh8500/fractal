@@ -1,2 +1,5 @@
 [build]
 filehash = false
+# NOTE: Root index.html now targets the Yew crate `refactor_ui` via
+# <link data-trunk rel="rust" data-crate="refactor_ui"> replacing previous egui app.
+# To restore egui, revert index.html to point to main crate and reintroduce canvas.

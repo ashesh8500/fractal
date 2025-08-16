@@ -152,6 +152,8 @@ class BacktestResult:
     # Holdings per timestamp and optional rebalance details for richer analytics
     holdings_history: List[Dict[str, float]] = field(default_factory=list)
     rebalance_details: List[Dict[str, Any]] = field(default_factory=list)
+    benchmark_values: List[float] = field(default_factory=list)
+    allocation_weights: List[Dict[str, float]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API serialization."""
@@ -175,4 +177,6 @@ class BacktestResult:
             "portfolio_values": self.portfolio_values,
             "timestamps": [ts.isoformat() for ts in self.timestamps],
             "executed_trades": self.executed_trades,
+            "benchmark_values": self.benchmark_values,
+            "allocation_weights": self.allocation_weights,
         }

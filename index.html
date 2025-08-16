@@ -9,8 +9,8 @@
     <!-- change this to your project name -->
     <title>fractal</title>
 
-    <!-- config for our rust wasm binary. go to https://trunkrs.dev/assets/#rust for more customization -->
-    <link data-trunk rel="rust" data-wasm-opt="2" />
+    <!-- EGUI WEB BUILD DISABLED. Use refactor_ui crate instead. -->
+    <!-- <link data-trunk rel="rust" data-cargo-toml="refactor_ui/Cargo.toml" data-wasm-opt="2" /> -->
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
@@ -121,15 +121,10 @@
 <body>
     <!-- The WASM code will resize the canvas dynamically -->
     <!-- the id is hardcoded in main.rs . so, make sure both match. -->
-    <canvas id="the_canvas_id"></canvas>
-
-    <!-- the loading spinner will be removed in main.rs -->
-    <div class="centered" id="loading_text">
-        <p style="font-size:16px">
-            Loading…
-        </p>
-        <div class="lds-dual-ring"></div>
-    </div>
+    <!-- EGUI canvas & spinner commented out for Yew prototype -->
+    <!-- <canvas id="the_canvas_id"></canvas>
+    <div class="centered" id="loading_text"> ... </div> -->
+    <div id="root" style="width:100%; height:100%;"></div>
 
     <!--Register Service Worker. this will cache the wasm / js scripts for offline use (for PWA functionality). -->
     <!-- Force refresh (Ctrl + F5) to load the latest files instead of cached files  -->
@@ -145,4 +140,4 @@
 
 </html>
 
-<!-- Powered by egui: https://github.com/emilk/egui/ -->
+<!-- Now powered by Yew refactor_ui crate (egui temporarily disabled) -->

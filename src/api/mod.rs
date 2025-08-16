@@ -623,6 +623,79 @@ impl ApiClient {
 
         Ok(result)
     }
+
+    // ---------------- Strategy / LLM integration endpoints ----------------
+
+    pub async fn list_strategies(&self) -> Result<Vec<String>, ApiError> {
+        let url = format!("{}/strategies", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("list_strategies failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        let arr = v.get("strategies").and_then(|x| x.as_array()).ok_or_else(|| ApiError::Parsing("Missing strategies".into()))?;
+        Ok(arr.iter().filter_map(|s| s.as_str().map(|s2| s2.to_string())).collect())
+    }
+
+    pub async fn get_strategy_source(&self, module: &str) -> Result<String, ApiError> {
+        let url = format!("{}/strategies/source?module={}", self.base_url, urlencoding::encode(module));
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Backend(format!("get_strategy_source failed: status={}, body={}", status, text)));
+        }
+        let v: Value = resp.json().await?;
+        let src = v.get("source").and_then(|s| s.as_str()).ok_or_else(|| ApiError::Parsing("Missing source".into()))?;
+        Ok(src.to_string())
+    }
+
+    pub async fn validate_strategy_code(&self, code: &str, class_name: Option<&str>) -> Result<(bool, Option<String>, String), ApiError> {
+        let url = format!("{}/strategies/validate", self.base_url);
+        let payload = serde_json::json!({"code": code, "class_name": class_name});
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        let status_ok = resp.status().is_success();
+        let v: Value = resp.json().await?;
+        let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+        let cls = v.get("class_name").and_then(|s| s.as_str()).map(|s| s.to_string());
+        let msg = v.get("message").and_then(|s| s.as_str()).unwrap_or("" ).to_string();
+        if !status_ok && ok { return Err(ApiError::Backend(format!("validate_strategy_code unexpected status"))); }
+        Ok((ok, cls, msg))
+    }
+
+    pub async fn register_strategy(&self, class_name: &str, code: &str, strategy_name: Option<&str>) -> Result<(bool, Option<String>, String), ApiError> {
+        let url = format!("{}/strategies/register", self.base_url);
+        let payload = serde_json::json!({"class_name": class_name, "code": code, "strategy_name": strategy_name});
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        let v: Value = resp.json().await?;
+        let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+        let module_path = v.get("module_path").and_then(|s| s.as_str()).map(|s| s.to_string());
+        let msg = v.get("message").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        if !ok { return Err(ApiError::Backend(format!("register_strategy failed: {}", msg))); }
+        Ok((ok, module_path, msg))
+    }
+
+    pub async fn inline_backtest(&self, code: &str, symbols: &[String], start_date: &str, end_date: &str, initial_capital: f64, commission: f64, slippage: f64, rebalance: &str, benchmark: &str) -> Result<Value, ApiError> {
+        let url = format!("{}/strategies/backtest-inline", self.base_url);
+        let payload = serde_json::json!({
+            "code": code,
+            "symbols": symbols,
+            "start_date": start_date,
+            "end_date": end_date,
+            "initial_capital": initial_capital,
+            "commission": commission,
+            "slippage": slippage,
+            "rebalance": rebalance,
+            "benchmark": benchmark,
+        });
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        let v: Value = resp.json().await?;
+        let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+        if !ok { return Err(ApiError::Backend(format!("inline_backtest failed: {}", v.get("message").and_then(|s| s.as_str()).unwrap_or("unknown")))); }
+        Ok(v)
+    }
 }
 
 impl ApiClient {

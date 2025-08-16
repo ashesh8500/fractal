@@ -12,7 +12,7 @@ from enum import Enum
 class PortfolioCreate(BaseModel):
     """Schema for creating a new portfolio."""
     name: str = Field(..., min_length=1, max_length=100)
-    holdings: Dict[str, float] = Field(..., min_items=1)
+    holdings: Dict[str, float] = Field(...)
     
     @field_validator('holdings')
     def validate_holdings(cls, v):
@@ -130,6 +130,85 @@ class BacktestResponse(BaseModel):
     losing_trades: int
 
 
+# --------------------
+# Dynamic Strategy (LLM-assisted) schemas
+# --------------------
+
+class StrategyCodeRequest(BaseModel):
+    """Submit raw strategy source code for validation.
+
+    Exactly one class inheriting BaseStrategy must be defined. The API will exec the code
+    inside an isolated namespace (no external imports beyond portfolio_lib) and report the class name.
+    """
+    code: str
+    class_name: Optional[str] = None
+
+
+class StrategyValidationResponse(BaseModel):
+    ok: bool
+    message: str
+    module: Optional[str] = None
+    class_name: Optional[str] = None
+
+
+class StrategyRegisterRequest(BaseModel):
+    class_name: str
+    code: str
+    strategy_name: Optional[str] = None
+
+
+class StrategyRegisterResponse(BaseModel):
+    ok: bool
+    module_path: Optional[str] = None
+    class_name: Optional[str] = None
+    message: Optional[str] = None
+
+
+class StrategyListResponse(BaseModel):
+    strategies: List[str]
+
+
+class StrategySourceResponse(BaseModel):
+    module: str
+    source: str
+
+
+class InlineBacktestRequest(BaseModel):
+    code: str
+    symbols: List[str]
+    start_date: datetime
+    end_date: datetime
+    initial_capital: float = 100000.0
+    commission: float = 0.0005
+    slippage: float = 0.0002
+    rebalance: str = Field("monthly", pattern="^(daily|weekly|monthly|quarterly)$")
+    benchmark: str = "SPY"
+
+
+class InlineBacktestResponse(BaseModel):
+    ok: bool
+    message: Optional[str] = None
+    strategy_name: Optional[str] = None
+    total_return: Optional[float] = None
+    annualized_return: Optional[float] = None
+    volatility: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    benchmark_return: Optional[float] = None
+    alpha: Optional[float] = None
+    beta: Optional[float] = None
+    total_trades: Optional[int] = None
+    portfolio_values: Optional[List[float]] = None
+    timestamps: Optional[List[str]] = None
+    executed_trades: Optional[List[Dict[str, Any]]] = None
+    daily_returns: Optional[List[float]] = None
+    drawdowns: Optional[List[float]] = None
+    benchmark_values: Optional[List[float]] = None
+    holdings_history: Optional[List[Dict[str, float]]] = None
+    rebalance_details: Optional[List[Dict[str, Any]]] = None
+    allocation_weights: Optional[List[Dict[str, float]]] = None
+
+
 class ErrorResponse(BaseModel):
     """Schema for error responses."""
     error: str
@@ -145,7 +224,7 @@ class DataProvider(str, Enum):
 
 class MarketDataRequest(BaseModel):
     """Schema for market data requests."""
-    symbols: List[str] = Field(..., min_items=1, max_items=20)
+    symbols: List[str] = Field(...)
     provider: DataProvider = DataProvider.YFINANCE
     
     @field_validator('symbols')

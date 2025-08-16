@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<title>Strategy Workbench Prototype</title>
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<!-- Instruct trunk to build the refactor_ui crate (Yew) -->
+	
+<script type="module">
+import init, * as bindings from '/refactor_ui-7f1db57ea1f4fb17.js';
+const wasm = await init({ module_or_path: '/refactor_ui-7f1db57ea1f4fb17_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+	<base href="/" />
+	<style>html,body{margin:0;padding:0;background:#0f1115;color:#e0e6ef;font-family:system-ui,Segoe UI,Roboto,Inter,sans-serif;}::-webkit-scrollbar{width:8px;}::-webkit-scrollbar-thumb{background:#2a3240;border-radius:4px;}</style>
+<link rel="modulepreload" href="/refactor_ui-7f1db57ea1f4fb17.js" crossorigin="anonymous" integrity="sha384-xKioa+HPKyykKZUGAE31rakbD6UvpPiSwtZAjZcYseLpMM1tRqVsZQnMvzZzUk8n"><link rel="preload" href="/refactor_ui-7f1db57ea1f4fb17_bg.wasm" crossorigin="anonymous" integrity="sha384-J+kacaKTEAb/ri4NjsFhuRfDuX0gtIOesJeST21fu6e6DeCtBGJpA7+AT0ccDSCc" as="fetch" type="application/wasm"></head>
+<body>
+	<div id="root"></div>
+	<!-- Trunk will inject the generated JS bootstrap automatically -->
+</body>
+</html>

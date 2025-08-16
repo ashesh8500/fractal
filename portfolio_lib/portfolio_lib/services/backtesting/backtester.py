@@ -124,9 +124,11 @@ class BacktestingService:
         current_holdings = initial_holdings.copy()
         cash = 0.0  # will be computed after dates are aligned
         portfolio_values: List[float] = []
+        benchmark_values: List[float] = []
         daily_returns: List[float] = []
         timestamps: List = []
         holdings_history: List[Dict[str, float]] = []
+        allocation_weights: List[Dict[str, float]] = []
         rebalance_details: List[Dict] = []
         total_trades = 0
         winning_trades = 0
@@ -227,6 +229,7 @@ class BacktestingService:
             portfolio_values.append(portfolio_value)
             timestamps.append(current_date)
             holdings_history.append(dict(current_holdings))
+            allocation_weights.append(dict(current_weights))
 
             if i > 0:
                 daily_return = (
@@ -308,6 +311,17 @@ class BacktestingService:
                                 price = getattr(t, "price", None)
                                 ts = getattr(t, "timestamp", None) or current_date
                                 reason = getattr(t, "reason", None)
+                                # Enrich missing or non-positive price from current_prices for frontend diagnostics
+                                if sym is not None and (
+                                    price is None
+                                    or (isinstance(price, float) and (np.isnan(price) or price <= 0.0))
+                                ):
+                                    try:
+                                        cp = current_prices.get(sym)
+                                        if cp is not None and np.isfinite(float(cp)):
+                                            price = float(cp)
+                                    except Exception:
+                                        pass
                                 if act is None:
                                     act_str = None
                                 else:
@@ -349,6 +363,28 @@ class BacktestingService:
                     )
                     continue
 
+            # Benchmark cumulative value (rebased to initial capital) if available
+            try:
+                bench_sym = backtest_config.benchmark
+                bench_hist = price_history.get(bench_sym)
+                if bench_hist is not None and not bench_hist.empty:
+                    bench_series = []
+                    base_price = None
+                    for date in simulation_dates:
+                        if date in bench_hist.index:
+                            px = self._to_float(bench_hist.loc[date, "close"])  # type: ignore[index]
+                            if base_price is None and px == px and px > 0:
+                                base_price = px
+                            if base_price is not None and px == px:
+                                bench_series.append(float(backtest_config.initial_capital) * (px / base_price))
+                            else:
+                                bench_series.append(float("nan"))
+                        else:
+                            bench_series.append(float("nan"))
+                    benchmark_values = bench_series
+            except Exception:
+                pass
+
         return {
             "portfolio_values": portfolio_values,
             "daily_returns": daily_returns,
@@ -360,6 +396,8 @@ class BacktestingService:
             "executed_trades": executed_trades,
             "holdings_history": holdings_history,
             "rebalance_details": rebalance_details,
+            "benchmark_values": benchmark_values,
+            "allocation_weights": allocation_weights,
         }
 
     def _execute_trades(

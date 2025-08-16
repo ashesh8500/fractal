@@ -1,0 +1,7 @@
+[build]
+# Ensure we don't inherit the root index accidentally
+public_url = "/"
+
+[watch]
+# Watch the crate and this index.html
+ignore = []

@@ -57,6 +57,10 @@ opt-level = 2
 
 [patch.crates-io]
 
+[workspace]
+# Temporarily removed refactor_ui from workspace to make it independent
+# members = ["refactor_ui"]
+
 [lints]
 workspace = true
 

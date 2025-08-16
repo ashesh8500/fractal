@@ -121,7 +121,8 @@ class MLAttractivenessStrategy(BaseStrategy):
             std = series.rolling(window=period).std().iloc[-1]
             upper = sma + num_std * std
             lower = sma - num_std * std
-            price = float(current_prices.get(t, series.iloc[-1]))
+            cp_val = current_prices.get(t, None)
+            price = float(series.iloc[-1] if cp_val is None else cp_val)
             denom = upper - lower
             pb[t] = float((price - lower) / denom) if denom and denom != 0.0 else 0.5
         return pd.Series(pb)
@@ -167,10 +168,11 @@ class MLAttractivenessStrategy(BaseStrategy):
 
     def _build_trades_from_delta(self, current: pd.Series, target: pd.Series) -> List[Trade]:
         trades: List[Trade] = []
+        eps = 1e-6
         for tick in current.index:
             delta = float(target.get(tick, 0.0) - current.get(tick, 0.0))
-            if delta > 0:
+            if delta > eps:
                 trades.append(Trade(symbol=tick, action=TradeAction.BUY, quantity=delta))
-            elif delta < 0:
+            elif delta < -eps:
                 trades.append(Trade(symbol=tick, action=TradeAction.SELL, quantity=-delta))
         return trades

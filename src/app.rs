@@ -5,7 +5,6 @@ use crate::views::backtest::drain_backtest_requests;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
@@ -95,6 +94,7 @@ pub struct TemplateApp {
     #[serde(skip)]
     backend_manual_load_pending: bool,
 }
+
 
 #[derive(Debug, Clone)]
 enum ConnectionStatus {
@@ -267,7 +267,6 @@ impl TemplateApp {
                     Err(e) => {
                         self.connection_status = ConnectionStatus::Error(e.clone());
                         self.test_message = format!("Connection failed: {}", e);
-                        self.last_error_message = Some(e);
                     }
                 }
             }
@@ -905,6 +904,7 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
     });
 }
 
+// Implementation of the eframe::App trait separated from helper impl above
 impl eframe::App for TemplateApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1058,6 +1058,9 @@ impl eframe::App for TemplateApp {
                                     // Try direct deserialization first
                                     if let Ok(bt) = serde_json::from_value::<crate::portfolio::BacktestResult>(v.clone()) {
                                         p.backtest_results = Some(bt);
+                                        // Store status for UI feedback
+                                        let status_id = egui::Id::new(format!("backtest_status:{}", pname));
+                                        mem.data.insert_temp(status_id, String::from("Backtest completed."));
                                     } else {
                                         // Manual adapter: convert backend schema -> UI BacktestResult
                                         use chrono::{DateTime, NaiveDateTime, Utc};
@@ -1117,6 +1120,8 @@ impl eframe::App for TemplateApp {
                                         };
 
                                         // Optional: parse benchmark curve if present
+                                        let status_id = egui::Id::new(format!("backtest_status:{}", pname));
+                                        mem.data.insert_temp(status_id, String::from("Backtest completed (adapted)."));
                                         // Supports shapes: { benchmark_curve: [{timestamp, value}] } or
                                         // separate arrays: benchmark_values [+ timestamps]
                                         if let Some(curve_arr) = v.get("benchmark_curve").and_then(|x| x.as_array()) {

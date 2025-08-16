@@ -138,7 +138,7 @@ class MomentumStrategy(BaseStrategy):
                     symbol=symbol,
                     action=action,
                     quantity=qty,  # weight fraction
-                    price=0.0,     # price filled by executor/backtester context
+                    # leave price None; backtester will enrich for diagnostics
                     timestamp=datetime.now(),
                     reason=reason
                 ))

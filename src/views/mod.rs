@@ -10,6 +10,7 @@ pub mod charts;
 pub mod tables;
 pub mod candles;
 pub mod backtest;
+pub mod strategy_workbench;
 
 pub use dashboard::DashboardComponent;
 pub use charts::ChartsComponent;

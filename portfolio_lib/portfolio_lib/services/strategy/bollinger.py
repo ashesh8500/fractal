@@ -243,13 +243,14 @@ class BollingerAttractivenessStrategy(BaseStrategy):
         self, current: pd.Series, target: pd.Series
     ) -> List[Trade]:
         trades: List[Trade] = []
+        eps = 1e-6
         for tick in current.index:
             delta = float(target.get(tick, 0.0) - current.get(tick, 0.0))
-            if delta > 0:
+            if delta > eps:
                 trades.append(
                     Trade(symbol=tick, action=TradeAction.BUY, quantity=delta)
                 )
-            elif delta < 0:
+            elif delta < -eps:
                 trades.append(
                     Trade(symbol=tick, action=TradeAction.SELL, quantity=-delta)
                 )

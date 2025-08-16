@@ -3,7 +3,7 @@
 use super::{PortfolioComponent, ComponentCategory, DataProviderStatusComponent};
 use crate::portfolio::Portfolio;
 use crate::state::Config;
-use crate::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent, BacktestComponent};
+use crate::views::{DashboardComponent, ChartsComponent, TablesComponent, CandlesComponent, BacktestComponent, strategy_workbench::StrategyWorkbenchComponent};
 
 pub struct ComponentManager {
     pub components: Vec<Box<dyn PortfolioComponent>>,
@@ -24,7 +24,8 @@ impl ComponentManager {
         manager.register_component(Box::new(ChartsComponent::new()));
         manager.register_component(Box::new(TablesComponent::new()));
         manager.register_component(Box::new(CandlesComponent::new()));
-    manager.register_component(Box::new(BacktestComponent::new()));
+        manager.register_component(Box::new(BacktestComponent::new()));
+        manager.register_component(Box::new(StrategyWorkbenchComponent::new()));
         
         manager
     }

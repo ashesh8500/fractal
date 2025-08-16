@@ -65,16 +65,17 @@ class MeanReversionStrategy(BaseStrategy):
 
         # Build trades as weight delta
         trades = []
+        eps = 1e-6
         for s, current_w in portfolio_weights.items():
             tgt = float(target_weights.get(s, 0.0))
             delta = tgt - float(current_w)
-            if abs(delta) > 1e-4:
+            if abs(delta) > eps:
                 trades.append(
                     Trade(
                         symbol=s,
                         action=TradeAction.BUY if delta > 0 else TradeAction.SELL,
                         quantity=abs(delta),
-                        price=0.0,
+                        # leave price None; backtester enriches diagnostics
                         timestamp=datetime.utcnow(),
                         reason=f"Rebalance to target {tgt:.2%} from {current_w:.2%}",
                     )

@@ -2,9 +2,9 @@
 
 ## Overall Status
 - **Goal**: Port the portfolio_app to the fractal repository with clean architecture
-- **Current Phase**: Phase 3 - Frontend Foundation
-- **Status**: Phase 2 completed successfully, ready for frontend development
-- **Architecture**: Modular design with portfolio_lib + backend_server + Rust frontend
+- **Current Phase**: Phase 4 - Frontend Refactor (Python GUI)
+- **Status**: Adding a Python Dear PyGui frontend alongside Rust egui for simpler iteration
+- **Architecture**: Modular design with portfolio_lib + backend_server + Python GUI (Dear PyGui) [+ legacy Rust frontend]
 
 ## Development Phases
 
@@ -44,14 +44,12 @@
 - [x] Fix widget ID conflicts and window closing functionality
 - [x] Add price history support to backend API
 
-### Phase 4: Core UI Components (🚧 IN PROGRESS)
-- [ ] Redesign portfolio dashboard component using egui demo patterns
-- [ ] Implement advanced price charts using Line and Plot widgets
-- [ ] Enhance tables with improved scrolling, stripe styles, and tooltips
-- [ ] Add interactive panels and tooltips to provide enhanced usability
-- [ ] Improve window management with full constraints and resizing
-- [ ] Basic portfolio CRUD operations in UI
-- [ ] Integration with backend API
+### Phase 4: Frontend Refactor (🚧 IN PROGRESS)
+- [x] Add initial Python Dear PyGui workbench (portfolio_lib.ui.pygui_workbench)
+- [ ] Parity features with Rust frontend: strategy selection, backtest config, metrics, trades
+- [ ] Optional: render charts (equity, allocations) via image/textures
+- [ ] Wire to backend_server endpoints (optional, currently using library directly)
+- [ ] Decide deprecation path for Rust egui frontend once feature parity reached
 
 ### Phase 5: Advanced Features
 - [ ] Port risk dashboard component
@@ -69,6 +67,12 @@
 - [ ] CI/CD pipeline setup
 
 ## Phase Logs
+
+### Phase 4: Frontend Refactor (🚧 IN PROGRESS)
+- Started: 2025-08-11
+- Added new Python Dear PyGui workbench: portfolio_lib/ui/pygui_workbench.py
+- MVP supports: selecting strategies, configuring backtests, running, and viewing metrics/trade previews
+- Next: chart rendering and optional backend wiring
 
 ### Phase 1: Core Foundation (✅ COMPLETED)
 - **Started**: 2025-07-30
@@ -107,13 +111,11 @@
 10. ✅ **FIXED**: Arithmetic overflow in indicator calculations
 
 ## Next Actions (Priority Order)
-1. Finalize integration testing and UI polish for Phase 3
-2. **CURRENT**: Redesign major UI elements using egui demo patterns
-3. Implement enhanced chart visualizations in Charts component
-4. Add hover tooltips for candlestick charts showing OHLC values
-5. Implement portfolio creation/editing and modal dialogs
-6. Add real-time data refresh and interactive features
-7. Begin Phase 4: Port and extend core UI components
+1. Ship Dear PyGui parity: add equity/allocations charts in PyGUI workbench
+2. Add portfolio CRUD and presets in PyGUI
+3. Optional: Call backend_server endpoints from PyGUI instead of direct library calls
+4. Document deprecation or coexistence plan for Rust egui frontend
+5. Integration test the PyGUI workflows
 
 ## Testing Instructions
 1. Start backend server: `python test_integration.py`

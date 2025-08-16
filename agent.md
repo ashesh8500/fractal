@@ -1,7 +1,7 @@
 # Agent Context
 
 ## Current State
-**Phase 3: IN PROGRESS** 🚧 - Frontend foundation improved. UI layout and rendering issues fixed: component window sizing, OHLC candlestick rendering, portfolio panel adjustments. Web version updated.
+Phase 4: Frontend Refactor (Python GUI) — Added a new Dear PyGui workbench at portfolio_lib/ui/pygui_workbench.py. It can select strategies, configure/run backtests using existing services, and display metrics and a trades preview. Legacy Rust egui frontend remains for now.
 
 ## Key Snippets
 
@@ -75,15 +75,17 @@ pytest tests/test_data_providers.py -v -m integration # Integration tests
 python test_dependency_injection.py                   # Comprehensive test
 ```
 
-## Next Instructions (Phase 3 Completion → Phase 4)
-1. **Complete and Polish Phase 3** - Finalize integration testing, ensure smooth operation
-2. **Implement Hover Tooltips** - Add hover functionality to candlestick charts to display OHLC values
-3. **Start Phase 4** - Implement UI components and features in the next phase
-4. **Portfolio CRUD UI** - Add UI forms for creating and editing portfolios
-5. **Advanced Charting** - Implement additional chart visualizations and options
-6. **Responsive Layout** - Improve layout responsiveness for various devices
+## Next Instructions
+1. Achieve parity in Dear PyGui: add equity/allocations charts (render as images/textures) and portfolio CRUD presets.
+2. Optionally wire PyGUI to backend_server endpoints (currently uses portfolio_lib directly).
+3. Decide deprecation/coexistence plan for Rust egui frontend once parity is reached.
+4. Add basic integration tests for PyGUI workflows (headless where possible).
 
 ## Environment and tooling
+
+Run PyGUI:
+- pip install -e ./portfolio_lib[all] dearpygui
+- python -m portfolio_lib.ui.pygui_workbench
 
 ### Current Setup
 - **Rust**: egui 0.32, eframe 0.32 (existing template preserved)

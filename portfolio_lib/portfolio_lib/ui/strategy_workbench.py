@@ -59,6 +59,192 @@ except Exception:
 # LangChain imports will be done inside main() when needed to avoid optional dep errors
 
 
+# Status tracking constants
+PRESET_STAGES = [
+    "symbols_configured",
+    "strategy_defined", 
+    "backtest_run",
+    "results_reviewed",
+    "strategy_saved"
+]
+
+
+def _status_badge(status: str) -> str:
+    """Generate status badge emoji and text."""
+    s = (status or "").strip().lower()
+    if s == "in_progress":
+        return "🔵 in_progress"
+    if s == "done":
+        return "✅ done"
+    if s == "error":
+        return "❌ error"
+    return "🟡 pending"
+
+
+def _sanitize_args_for_display(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize tool arguments for display, hiding sensitive data."""
+    safe = {}
+    for k, v in (args or {}).items():
+        lk = str(k).lower()
+        if lk in {"api_key", "authorization", "access_token", "secret", "openai_api_key"}:
+            safe[k] = "***"
+        elif lk in {"api_base", "base_url"}:
+            safe[k] = "***"
+        elif lk in {"code"} and isinstance(v, str) and len(v) > 200:
+            safe[k] = f"[code snippet {len(v)} chars]"
+        else:
+            safe[k] = v
+    return safe
+
+
+def _parse_tool_json(text: str) -> Optional[Dict[str, Any]]:
+    """Parse JSON tool call from text with multiple fallback strategies."""
+    if not text:
+        return None
+        
+    # Try direct JSON parse first
+    try:
+        obj = json.loads(text.strip())
+        if isinstance(obj, dict) and obj.get("tool"):
+            return obj
+    except Exception:
+        pass
+    
+    # Find JSON object in text using improved regex
+    import re
+    json_pattern = r'\{(?:[^{}]|{[^{}]*})*"tool"(?:[^{}]|{[^{}]*})*\}'
+    matches = re.findall(json_pattern, text, re.DOTALL)
+    
+    for match in matches:
+        try:
+            obj = json.loads(match)
+            if isinstance(obj, dict) and obj.get("tool"):
+                return obj
+        except Exception:
+            continue
+    
+    # Try extracting from end of text
+    try:
+        start = text.rfind("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            obj = json.loads(text[start : end + 1])
+            if isinstance(obj, dict) and obj.get("tool"):
+                return obj
+    except Exception:
+        pass
+    
+    return None
+
+
+def _to_csv(records: List[Dict[str, Any]]) -> str:
+    """Convert list of records to CSV string."""
+    if not records:
+        return ""
+    import csv
+    import io
+    cols = sorted({k for r in records for k in r.keys()})
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols)
+    w.writeheader()
+    for r in records:
+        w.writerow({c: r.get(c, "") for c in cols})
+    return buf.getvalue()
+
+
+def _store_dir() -> str:
+    """Get or create storage directory for sessions."""
+    import os
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".workbench_store"))
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def _save_session(st, session_name: Optional[str] = None) -> Dict[str, Any]:
+    """Save current session state to file."""
+    import os
+    import time
+    
+    data = {
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "session_name": session_name or st.session_state.get("_session_name"),
+        "chat": st.session_state.get("chat", []),
+        "backtest_results": st.session_state.get("backtest_results", []),
+        "status_map": st.session_state.get("status_map", {}),
+        "symbols": st.session_state.get("_last_symbols"),
+        "years": st.session_state.get("_last_years"),
+        "initial_capital": st.session_state.get("_last_initial_capital"),
+        "commission": st.session_state.get("_last_commission"),
+        "slippage": st.session_state.get("_last_slippage"),
+        "rebalance": st.session_state.get("_last_rebalance"),
+        "benchmark": st.session_state.get("_last_benchmark"),
+    }
+    
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    name_part = f"-{session_name}" if session_name else ""
+    filename = f"session{name_part}-{timestamp}.json"
+    path = os.path.join(_store_dir(), filename)
+    
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return {"ok": True, "path": path}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _list_saved_sessions(limit: int = 25) -> List[Dict[str, Any]]:
+    """List previously saved sessions."""
+    import os
+    base = _store_dir()
+    try:
+        files = [os.path.join(base, f) for f in os.listdir(base) if f.startswith("session-") and f.endswith(".json")]
+    except Exception:
+        return []
+    
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    out = []
+    for p in files[:limit]:
+        try:
+            mtime = os.path.getmtime(p)
+            out.append({
+                "path": p,
+                "mtime": mtime,
+                "label": f"{os.path.basename(p)} — {datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')}"
+            })
+        except Exception:
+            continue
+    return out
+
+
+def _load_session_from_file(path: str, st) -> Dict[str, Any]:
+    """Load session from file."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        # Restore session state
+        st.session_state["_session_name"] = data.get("session_name")
+        st.session_state["chat"] = data.get("chat", [])
+        st.session_state["backtest_results"] = data.get("backtest_results", [])
+        st.session_state["status_map"] = data.get("status_map", {})
+        
+        # Store loaded config for reference
+        st.session_state["_loaded_config"] = {
+            "symbols": data.get("symbols"),
+            "years": data.get("years"),
+            "initial_capital": data.get("initial_capital"),
+            "commission": data.get("commission"),
+            "slippage": data.get("slippage"),
+            "rebalance": data.get("rebalance"),
+            "benchmark": data.get("benchmark"),
+        }
+        
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # Tool schemas for LangChain tool-calling
 class RegisterStrategy(BaseModel):
     """Register a new strategy class to custom folder."""
@@ -112,7 +298,16 @@ def _build_close_frame(price_history: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         )
         if not col:
             continue
-        s = pd.Series(df[col].values, index=pd.to_datetime(df.index), name=sym)
+        # Normalize index to tz-naive to align with backtest timestamps
+        idx = pd.to_datetime(df.index)
+        try:
+            idx = idx.tz_localize(None)  # if tz-aware
+        except Exception:
+            try:
+                idx = idx.tz_convert(None)  # if tz-aware with tz set
+            except Exception:
+                pass
+        s = pd.Series(df[col].values, index=idx, name=sym)
         series.append(s)
     if not series:
         return pd.DataFrame()
@@ -141,8 +336,8 @@ def _plot_growth_with_benchmark(
     strat_g = strat / float(strat.iloc[0])
     # Benchmark equity
     if benchmark in closes.columns:
-        bench = closes[benchmark]
-        bench_g = bench / float(bench.iloc[0])
+        bench = closes[benchmark].astype(float)
+        bench_g = bench / float(bench.iloc[0]) if len(bench) else pd.Series(index=idx, dtype=float)
     else:
         bench_g = pd.Series(index=idx, dtype=float)
     # Baseline: buy-and-hold initial holdings
@@ -176,6 +371,7 @@ def _plot_growth_with_benchmark(
 
 def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
     import importlib
+    import numpy as np
 
     go = importlib.import_module("plotly.graph_objects")
     idx = pd.to_datetime(res.timestamps)
@@ -184,17 +380,36 @@ def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[A
     closes = _build_close_frame(price_history).reindex(idx).ffill()
     if closes.empty:
         return None
-    # Build weights over time
+    # Build weights over time with carry-forward when missing, and detect weight-like inputs
     weights = []
+    last_w = pd.Series(0.0, index=closes.columns)
     for i, ts in enumerate(idx):
         hh = res.holdings_history[i] if i < len(res.holdings_history) else {}
         if not hh:
-            weights.append(pd.Series(0.0, index=closes.columns))
+            weights.append(last_w)
             continue
+        # If holdings sum to ~1, treat them as weights directly
+        try:
+            hh_series = pd.Series({k: float(hh.get(k, 0.0)) for k in closes.columns})
+            ssum = float(hh_series.sum())
+        except Exception:
+            hh_series = pd.Series(0.0, index=closes.columns)
+            ssum = 0.0
+        if 0.98 <= ssum <= 1.02:
+            w = hh_series.clip(lower=0.0)
+            w = w / float(w.sum()) if float(w.sum()) > 0 else w
+            last_w = w
+            weights.append(w)
+            continue
+        # Otherwise compute weights from shares * price
         prices = closes.loc[ts].reindex(closes.columns).astype(float)
-        pos_val = pd.Series({k: float(hh.get(k, 0.0)) for k in closes.columns}) * prices
+        pos_val = hh_series * prices
         tot = float(pos_val.sum())
-        w = (pos_val / tot) if tot > 0 else pos_val
+        if not (tot > 0) or not np.isfinite(tot):
+            weights.append(last_w)
+            continue
+        w = (pos_val / tot).clip(lower=0.0)
+        last_w = w
         weights.append(w)
     wdf = pd.concat(weights, axis=1).T
     wdf.index = idx
@@ -202,10 +417,8 @@ def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[A
     means = wdf.mean().sort_values(ascending=False)
     ordered_cols = list(means.index)
     wdf_top = wdf[ordered_cols].fillna(0.0)
-    # Ensure non-negative and bounded weights
-    wdf_top = wdf_top.clip(lower=0.0, upper=1.0)
-    # Compute remainder as Others (should be near zero if all symbols included)
-    others = (1.0 - wdf_top.sum(axis=1)).clip(lower=0.0)
+    # Ensure non-negative weights
+    wdf_top = wdf_top.clip(lower=0.0)
     fig = go.Figure()
     for col in ordered_cols:
         fig.add_trace(
@@ -215,18 +428,7 @@ def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[A
                 mode="lines",
                 name=col,
                 stackgroup="one",
-                groupnorm="fraction",
-            )
-        )
-    if others.notna().any() and (others > 1e-6).any():
-        fig.add_trace(
-            go.Scatter(
-                x=wdf_top.index,
-                y=others.values,
-                mode="lines",
-                name="Others",
-                stackgroup="one",
-                groupnorm="fraction",
+                # weights are already normalized; no additional group normalization
             )
         )
     # Add vertical markers at rebalance timestamps if available
@@ -257,9 +459,14 @@ def _plot_allocations(res, price_history: Dict[str, pd.DataFrame]) -> Optional[A
     fig.update_layout(
         title="Portfolio Allocation",
         xaxis_title="Date",
-        yaxis_title="Weight",
-        yaxis=dict(range=[0, 1]),
+    yaxis_title="Weight",
+    yaxis=dict(range=[0, 1]),
     )
+    try:
+        if (wdf_top.sum(axis=1) <= 1e-9).all():
+            fig.add_annotation(text="No allocation changes recorded (all zero weights)", xref="paper", yref="paper", x=0.01, y=0.95, showarrow=False, font=dict(color="#aaa"))
+    except Exception:
+        pass
     return fig
 
 
@@ -324,6 +531,35 @@ def _plot_trades(res, price_history: Dict[str, pd.DataFrame]) -> Optional[Any]:
     return fig
 
 
+def _extract_code_and_class(raw: str) -> Optional[Dict[str, str]]:
+    """Best-effort extract Python code and class name from raw text.
+    - Prefer fenced code blocks ``` ... ```
+    - Else, if text contains a class that subclasses BaseStrategy, return whole text
+    """
+    try:
+        if not raw:
+            return None
+        import re
+        code = None
+        # fenced code
+        m = re.search(r"```(?:python)?\n([\s\S]*?)```", raw, re.IGNORECASE)
+        if m:
+            code = m.group(1).strip()
+        else:
+            # If it looks like code, take the whole thing
+            if "class" in raw and "BaseStrategy" in raw:
+                code = raw
+        if not code:
+            return None
+        m2 = re.search(r"class\s+([A-Za-z_]\w*)\s*\(\s*BaseStrategy\s*\)", code)
+        cls = m2.group(1) if m2 else None
+        if not cls:
+            return None
+        return {"code": code, "class_name": cls}
+    except Exception:
+        return None
+
+
 def _fetch_models(api_base: str, api_key: str = "") -> List[str]:
     """Query OpenAI-compatible /models endpoint to list available model ids."""
     try:
@@ -344,35 +580,10 @@ def _fetch_models(api_base: str, api_key: str = "") -> List[str]:
 
 
 def _parse_tool_call(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Parse a JSON tool call from model output.
-    Supports:
-      - register_strategy: {tool, class_name, code, strategy_name?}
-      - backtest_strategy: {tool, code, symbols, years? or start_date/end_date, initial_capital, commission, slippage, rebalance, benchmark}
-    Returns (tool_name, payload_dict) or None.
+    """Parse a JSON tool call from model output (DEPRECATED).
+    This function is disabled to prioritize native LangChain tool calling.
+    Returns None to force reliance on native tool calls from the API.
     """
-
-    def _as_obj(t: str) -> Optional[Dict[str, Any]]:
-        try:
-            o = json.loads(t)
-            return o if isinstance(o, dict) else None
-        except Exception:
-            return None
-
-    obj = _as_obj(text)
-    if not obj:
-        # fallback: find first JSON object
-        try:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                obj = _as_obj(text[start : end + 1])
-        except Exception:
-            obj = None
-    if not obj:
-        return None
-    tool = obj.get("tool")
-    if tool in {"register_strategy", "backtest_strategy"}:
-        return tool, obj
     return None
 
 
@@ -525,6 +736,120 @@ def main():
     # Chat session state
     if "chat" not in st.session_state:
         st.session_state.chat = []  # list of dicts {role, content}
+    
+    # Initialize status tracking
+    st.session_state.setdefault("status_map", {})
+    st.session_state.setdefault("backtest_results", [])
+    for stage in PRESET_STAGES:
+        st.session_state["status_map"].setdefault(stage, {"status": "pending", "note": ""})
+    
+    # Store current sidebar values for session persistence
+    st.session_state["_last_symbols"] = symbols
+    st.session_state["_last_years"] = years
+    st.session_state["_last_initial_capital"] = initial_capital
+    st.session_state["_last_commission"] = commission
+    st.session_state["_last_slippage"] = slippage
+    st.session_state["_last_rebalance"] = rebalance
+    st.session_state["_last_benchmark"] = benchmark
+    
+    # Update status based on configuration
+    if symbols and len(symbols) >= 2:
+        st.session_state["status_map"]["symbols_configured"] = {"status": "done", "note": f"{len(symbols)} symbols configured"}
+    else:
+        st.session_state["status_map"]["symbols_configured"] = {"status": "pending", "note": "Need at least 2 symbols"}
+
+    # Status Panel
+    with st.expander("🔄 Strategy Workbench Status", expanded=False):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            for stage in PRESET_STAGES:
+                info = st.session_state["status_map"].get(stage, {"status": "pending", "note": ""})
+                cols = st.columns([2, 1, 3])
+                cols[0].markdown(f"**{stage.replace('_', ' ').title()}**")
+                cols[1].markdown(_status_badge(info.get("status", "pending")))
+                cols[2].markdown(info.get("note", ""))
+        
+        with col2:
+            st.markdown("**Quick Actions**")
+            session_name = st.text_input("Session Name", value=st.session_state.get("_session_name", ""), key="session_name_input")
+            if st.button("💾 Save Session", help="Save current chat and results"):
+                result = _save_session(st, session_name)
+                if result["ok"]:
+                    st.success("Session saved!")
+                    st.session_state["_session_name"] = session_name
+                else:
+                    st.error(f"Save failed: {result['error']}")
+            
+            if st.button("🧹 Clear All", help="Clear chat and reset status"):
+                st.session_state.pop("chat", None)
+                st.session_state.pop("backtest_results", None)
+                st.session_state["status_map"] = {stage: {"status": "pending", "note": ""} for stage in PRESET_STAGES}
+                st.rerun()
+
+    # Load Previous Session
+    saved_sessions = _list_saved_sessions()
+    if saved_sessions:
+        with st.expander("📁 Load Previous Session", expanded=False):
+            session_labels = [s["label"] for s in saved_sessions]
+            selected_session = st.selectbox("Choose Session", ["— select —"] + session_labels, key="session_loader")
+            if selected_session != "— select —":
+                session_info = next((s for s in saved_sessions if s["label"] == selected_session), None)
+                if session_info and st.button("🔄 Load Selected"):
+                    result = _load_session_from_file(session_info["path"], st)
+                    if result["ok"]:
+                        st.success("Session loaded successfully!")
+                        st.rerun()
+                    else:
+                        st.error(f"Load failed: {result['error']}")
+
+    # Results Dashboard
+    if st.session_state.get("backtest_results"):
+        with st.expander(f"📊 Backtest Results Dashboard ({len(st.session_state['backtest_results'])} runs)", expanded=False):
+            results = st.session_state["backtest_results"]
+            
+            # Summary metrics
+            if results:
+                latest = results[-1]
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Latest Return", f"{latest['metrics'].get('total_return', 0):.2%}")
+                col2.metric("Latest Sharpe", f"{latest['metrics'].get('sharpe_ratio', 0):.2f}")
+                col3.metric("Latest Max DD", f"{latest['metrics'].get('max_drawdown', 0):.2%}")
+                col4.metric("Total Runs", len(results))
+                
+                # Results table
+                df_results = []
+                for i, r in enumerate(results):
+                    df_results.append({
+                        "Run": i + 1,
+                        "Timestamp": r["timestamp"][:19],  # Remove microseconds
+                        "Symbols": ", ".join(r["symbols"][:3]) + ("..." if len(r["symbols"]) > 3 else ""),
+                        "Return": f"{r['metrics'].get('total_return', 0):.2%}",
+                        "Sharpe": f"{r['metrics'].get('sharpe_ratio', 0):.2f}",
+                        "Max DD": f"{r['metrics'].get('max_drawdown', 0):.2%}",
+                        "Trades": r['metrics'].get('total_trades', 0),
+                    })
+                
+                st.dataframe(df_results, use_container_width=True, hide_index=True)
+                
+                # Export options
+                col1, col2 = st.columns(2)
+                with col1:
+                    results_json = json.dumps(results, indent=2, default=str)
+                    st.download_button(
+                        "📥 Download Results (JSON)",
+                        data=results_json,
+                        file_name=f"backtest_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                
+                with col2:
+                    results_csv = _to_csv(df_results)
+                    st.download_button(
+                        "📥 Download Summary (CSV)",
+                        data=results_csv,
+                        file_name=f"backtest_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
 
     # Strategy Management Tabs
     tab_chat, tab_backtest, tab_store = st.tabs(["Chat", "Backtest", "Store/Load"])
@@ -542,97 +867,90 @@ def main():
         st.markdown("### Available Strategies")
         st.code("\n".join(list_available_strategies()) or "<none>")
 
-        # Chat history
-        for msg in st.session_state.chat:
+        # Chat history with simple edit affordance
+        for i, msg in enumerate(st.session_state.chat):
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
+                with st.expander("Edit", expanded=False):
+                    new_text = st.text_area(
+                        f"Edit message {i}", value=msg["content"], key=f"edit_{i}"
+                    )
+                    cols = st.columns(2)
+                    if cols[0].button("Save", key=f"save_{i}"):
+                        st.session_state.chat[i]["content"] = new_text
+                        st.rerun()
+                    if cols[1].button("Delete", key=f"del_{i}"):
+                        st.session_state.chat.pop(i)
+                        st.rerun()
 
         user_input = st.chat_input("Describe the strategy to create or modify…")
-        if user_input and provider != "None":
+        if user_input:
+            # Show user message immediately in the UI
+            with st.chat_message("user"):
+                st.markdown(user_input)
             st.session_state.chat.append({"role": "user", "content": user_input})
+            if provider == "None":
+                st.info("Select an LLM Provider in the sidebar to chat with tools.")
+                st.stop()
 
-            # Build a system prompt to constrain output
+                    # Build a system prompt for native tool calling
             if chat_mode == "Discuss":
                 sys_prompt = textwrap.dedent(
                     """
                     You are an expert quant Python assistant focused on strategy exploration.
+                    
+                    Available tools:
+                    - backtest_strategy: Run backtests on inline strategy code
+                    - register_strategy: Save strategy to file (only in Implement mode)
+                    
                     Flow:
-                    1) Briefly clarify and discuss the strategy idea.
-                    2) When ready to test, OUTPUT A SINGLE JSON OBJECT (last line only) to call a backtest tool.
-
-                    Backtest Tool JSON (emit exactly once when ready):
-                    {
-                        "tool": "backtest_strategy",
-                        "code": "<FULL PYTHON SOURCE CODE>",
-                        "symbols": ["AAPL", "MSFT", "NVDA"],
-                        "years": 3,
-                        "initial_capital": 100000,
-                        "commission": 0.0005,
-                        "slippage": 0.0002,
-                        "rebalance": "monthly",
-                        "benchmark": "QQQ"
-                    }
-
-                    Code Requirements:
-                    - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
+                    1) Discuss the strategy idea and approach
+                    2) When ready to test, use the backtest_strategy tool with the strategy code
+                    
+                    Code Requirements for strategies:
+                    - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy
                     - Constructor: super().__init__("<short_name>")
-                    - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
-                    - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
-                    - Keep it simple and fast. No I/O or network.
+                    - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult
+                    - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1)
+                    - Keep it simple and fast. No I/O or network calls.
+                    
+                    Use tools when appropriate - the system will handle tool calling automatically.
                     """
                 ).strip()
             else:
                 sys_prompt = textwrap.dedent(
                     """
                     You are an expert quant Python assistant.
-                    Workflow for each user request:
-                    1) Respond briefly confirming your understanding of the strategy request.
-                    2) Preview the approach at a high level (signals, weighting, constraints).
-                    3) Then output a SINGLE JSON object to call a tool to register the strategy file. The JSON must be the last line only.
-
-                    Tool spec (emit exactly this JSON shape when ready to register):
-                    {
-                        "tool": "register_strategy",
-                        "class_name": "<ClassName>",
-                        "strategy_name": "<short_name>",
-                        "code": "<FULL PYTHON SOURCE CODE>"
-                    }
-
-                    Code Requirements:
-                    - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy.
+                    
+                    Available tools:
+                    - register_strategy: Save strategy files to the custom folder
+                    - backtest_strategy: Run backtests on inline strategy code
+                    
+                    Workflow:
+                    1) Understand the strategy request and discuss the approach
+                    2) Use backtest_strategy to test the strategy
+                    3) Use register_strategy to save the final strategy to file
+                    
+                    Code Requirements for strategies:
+                    - Define exactly one class that subclasses portfolio_lib.services.strategy.base.BaseStrategy
                     - Constructor: super().__init__("<short_name>")
-                    - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult.
-                    - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1).
+                    - Implement execute(self, portfolio_weights, price_history, current_prices, config) -> StrategyResult
+                    - Use portfolio_lib.models.strategy.Trade and TradeAction; Trade.quantity is a weight fraction delta (0..1)
                     - No external I/O, no network calls.
                     - Compute must be simple and fast.
+                    
+                    Use tools when appropriate - the system will handle tool calling automatically.
                     """
-                ).strip()
-
-            # Choose model and set up tools + streaming
+                ).strip()            # Choose model and set up tools + streaming
             llm = None
             tools = []
             try:
                 # Streaming callback to Streamlit
-                from langchain.callbacks.base import BaseCallbackHandler
                 from langchain_core.messages import (  # type: ignore
                     HumanMessage,
                     SystemMessage,
                 )
                 from langchain_core.tools import tool as lc_tool  # type: ignore
-
-                class StreamHandler(BaseCallbackHandler):
-                    def __init__(self, container):
-                        self.container = container
-                        self.text = ""
-                        self.ignore_chat_model = True  # For LangChain compatibility
-
-                    def on_chat_model_start(self, *args, **kwargs):
-                        # No-op to suppress LangChain callback errors
-                        pass
-
-                    def on_llm_new_token(self, token: str, **kwargs):
-                        self.text += token
-                        self.container.markdown(self.text)
 
                 # Define tools via decorators using our Pydantic schemas
                 # Capture sidebar defaults for tool fallbacks
@@ -674,6 +992,7 @@ def main():
                     """Run a backtest on inline code; returns a compact JSON metrics summary."""
                     # Resolve parameters with fallbacks to sidebar defaults
                     syms = symbols if symbols else defaults_local.get("symbols", [])
+                    syms = [s for s in syms if isinstance(s, str) and s.strip()]
                     if not syms:
                         return json.dumps({"error": "No symbols"})
                     yrs_val = (
@@ -712,6 +1031,9 @@ def main():
                         if benchmark is not None
                         else str(defaults_local.get("benchmark", "QQQ"))
                     )
+                    # Ensure benchmark price data is available for plotting
+                    if bench and bench not in syms:
+                        syms = syms + [bench]
                     fig1, fig2, metrics = _run_backtest_on_code(
                         code,
                         [str(s).upper() for s in syms],
@@ -786,12 +1108,7 @@ def main():
                 with st.spinner("Asking model…"):
                     # Streaming container for assistant text
                     stream_box = st.empty()
-                    handler = None
-                    try:
-                        # Some providers need callbacks via callbacks parameter
-                        handler = StreamHandler(stream_box)
-                    except Exception:
-                        handler = None
+                    
                     # Bind tools
                     try:
                         llm_with_tools = (
@@ -804,87 +1121,185 @@ def main():
                         SystemMessage(content=sys_prompt),
                         HumanMessage(content=user_input),
                     ]
-                    # --- Streaming with tool-call handling ---
+                    # --- Stream response and collect native tool calls ---
                     chunks = []
                     text = ""
+                    tc_buffer: Dict[str, Dict[str, Any]] = {}
+                    tc_order: List[str] = []
+                    last_tc_id_by_name: Dict[str, str] = {}
+                    last_tc_id_global: Optional[str] = None
                     try:
                         for chunk in llm_with_tools.stream(msgs):
                             chunks.append(chunk)
-                            token = getattr(chunk, "content", str(chunk))
-                            text += token
-                            stream_box.markdown(text)
+                            # Extract and display text content
+                            content = getattr(chunk, "content", None)
+                            if content and isinstance(content, str):
+                                text += content
+                                stream_box.markdown(text)
+                            # Structured tool_calls
+                            for tc in (getattr(chunk, "tool_calls", []) or []):
+                                name = getattr(tc, "name", None) or (tc.get("name") if isinstance(tc, dict) else None)
+                                args = getattr(tc, "args", None) or (tc.get("args") if isinstance(tc, dict) else None)
+                                tc_id = getattr(tc, "id", None) or (tc.get("id") if isinstance(tc, dict) else None)
+                                if not tc_id:
+                                    if name and name in last_tc_id_by_name:
+                                        tc_id = last_tc_id_by_name[name]
+                                    elif last_tc_id_global:
+                                        tc_id = last_tc_id_global
+                                    else:
+                                        tc_id = f"tc_{len(tc_order)}"
+                                if tc_id not in tc_buffer:
+                                    tc_buffer[tc_id] = {"name": name, "args_str": "", "args": {}}
+                                    tc_order.append(tc_id)
+                                if name:
+                                    tc_buffer[tc_id]["name"] = name
+                                    last_tc_id_by_name[name] = tc_id
+                                last_tc_id_global = tc_id
+                                if isinstance(args, dict) and args:
+                                    tc_buffer[tc_id]["args"] = args
+                            # additional_kwargs fragments (tool_calls and legacy function_call)
+                            addl = getattr(chunk, "additional_kwargs", {}) or {}
+                            for entry in (addl.get("tool_calls", []) or []):
+                                try:
+                                    f = entry.get("function", {}) if isinstance(entry, dict) else {}
+                                    name = f.get("name")
+                                    part = f.get("arguments", "")
+                                    tc_id = entry.get("id")
+                                    if not tc_id:
+                                        if name and name in last_tc_id_by_name:
+                                            tc_id = last_tc_id_by_name[name]
+                                        elif last_tc_id_global:
+                                            tc_id = last_tc_id_global
+                                        else:
+                                            tc_id = f"tc_{len(tc_order)}"
+                                    if tc_id not in tc_buffer:
+                                        tc_buffer[tc_id] = {"name": name, "args_str": "", "args": {}}
+                                        tc_order.append(tc_id)
+                                    if name:
+                                        tc_buffer[tc_id]["name"] = name
+                                        last_tc_id_by_name[name] = tc_id
+                                    last_tc_id_global = tc_id
+                                    if isinstance(part, str):
+                                        tc_buffer[tc_id]["args_str"] += part
+                                except Exception:
+                                    pass
+                            # Legacy single function_call shape
+                            try:
+                                fcall = addl.get("function_call")
+                                if isinstance(fcall, dict) and (fcall.get("name") or fcall.get("arguments")):
+                                    name = fcall.get("name")
+                                    part = fcall.get("arguments", "")
+                                    tc_id = "function_call_0"
+                                    if tc_id not in tc_buffer:
+                                        tc_buffer[tc_id] = {"name": name, "args_str": "", "args": {}}
+                                        tc_order.append(tc_id)
+                                    if name:
+                                        tc_buffer[tc_id]["name"] = name
+                                        last_tc_id_by_name[name] = tc_id
+                                    last_tc_id_global = tc_id
+                                    if isinstance(part, str):
+                                        tc_buffer[tc_id]["args_str"] += part
+                            except Exception:
+                                pass
                     except Exception as e:
                         stream_box.markdown(f"Streaming error: {e}")
-                    final_chunk = chunks[-1] if chunks else None
+                        
+                    # Store assistant text in chat
                     if text:
-                        # Insert streamed assistant message into chat
                         st.session_state.chat.append({"role": "assistant", "content": text})
 
-                    # First, try provider-native tool calls (if any)
-                    executed_any_tool = False
-                    native_tool_calls = []
-                    if final_chunk is not None:
-                        try:
-                            native_tool_calls = getattr(final_chunk, "tool_calls", []) or []
-                        except Exception:
-                            native_tool_calls = []
-                    for tc in native_tool_calls:
-                        name = (
-                            getattr(tc, "name", None) or tc.get("name") if isinstance(tc, dict) else None
-                        )
-                        args = (
-                            getattr(tc, "args", None) or tc.get("args") if isinstance(tc, dict) else None
-                        )
+                    # Execute native tool calls (primary method)
+                    def _coerce_args(a):
+                        # Some providers send args as JSON string; parse best-effort
+                        if a is None:
+                            return {}
+                        if isinstance(a, str):
+                            try:
+                                parsed = json.loads(a)
+                                return parsed if isinstance(parsed, dict) else {}
+                            except Exception:
+                                return {}
+                        return a if isinstance(a, dict) else {}
+
+                    # Finalize calls by parsing accumulated args_str if needed
+                    finalized_calls: List[Dict[str, Any]] = []
+                    for tc_id in tc_order:
+                        rec = tc_buffer.get(tc_id, {})
+                        name = rec.get("name")
+                        args = rec.get("args") or {}
+                        if (not args) and rec.get("args_str"):
+                            try:
+                                parsed = json.loads(rec["args_str"])  # dict expected
+                                if isinstance(parsed, dict):
+                                    args = parsed
+                            except Exception:
+                                # try trimming common partials
+                                try:
+                                    s = rec["args_str"].strip()
+                                    if s.endswith(","):
+                                        s = s[:-1]
+                                    parsed = json.loads(s)
+                                    if isinstance(parsed, dict):
+                                        args = parsed
+                                except Exception:
+                                    args = {}
+                        if name:
+                            finalized_calls.append({"name": name, "args": args})
+
+                    for call in finalized_calls:
+                        name = call.get("name")
+                        args = _coerce_args(call.get("args"))
                         if not name:
                             continue
-                        with st.expander(f"Tool call detected: {name}"):
+                        with st.expander(f"🔧 Tool: {name}", expanded=True):
                             st.caption("Arguments")
+                            st.json(_sanitize_args_for_display(args or {}))
+                            # Debug: show raw JSON string if args empty
                             try:
-                                st.json(args if isinstance(args, dict) else json.loads(args or "{}"))
+                                # find buffer entry
+                                buf_id = next((tid for tid in tc_order if tc_buffer.get(tid, {}).get("name") == name), None)
+                                if buf_id:
+                                    raw = tc_buffer.get(buf_id, {}).get("args_str", "")
+                                    if raw and not args:
+                                        st.code(raw, language="json")
                             except Exception:
-                                st.write(args)
+                                pass
                         try:
-                            with st.spinner(f"Executing tool: {name}…"):
+                            with st.spinner(f"Executing {name}..."):
                                 if name == "register_strategy":
-                                    result = tools[0].invoke(args)
+                                    # If args missing code/class_name, try extracting from last assistant text or user input
+                                    a = dict(args or {})
+                                    if not a.get("code") or not a.get("class_name"):
+                                        fallback = _extract_code_and_class(text) or _extract_code_and_class(user_input)
+                                        if fallback:
+                                            a.setdefault("code", fallback.get("code"))
+                                            a.setdefault("class_name", fallback.get("class_name"))
+                                    result = register_strategy.invoke(a)
                                     st.success(str(result))
-                                    st.session_state.chat.append({"role": "assistant", "content": f"Tool result: {result}"})
                                 elif name == "backtest_strategy":
-                                    result = tools[1].invoke(args)
-                                    st.info("Backtest complete")
-                                    st.session_state.chat.append({"role": "assistant", "content": "Backtest complete"})
+                                    result = backtest_strategy.invoke(args)
+                                    st.info("✅ Backtest completed")
                                 else:
-                                    st.warning(f"Unknown tool: {name}")
-                                    st.session_state.chat.append({"role": "assistant", "content": f"Unknown tool: {name}"})
-                                executed_any_tool = True
+                                    st.warning(f"⚠️ Unknown tool: {name}")
                         except Exception as e:
-                            st.error(f"Tool '{name}' failed: {e}")
-                            st.session_state.chat.append({"role": "assistant", "content": f"Tool '{name}' failed: {e}"})
+                            st.error(f"❌ Tool '{name}' failed: {e}")
 
-                    # Fallback: parse JSON tool call embedded in text
-                    if not executed_any_tool:
-                        parsed = _parse_tool_call(text)
-                        if parsed is not None:
-                            tool_name, payload = parsed
-                            payload_args = {k: v for k, v in payload.items() if k != "tool"}
-                            with st.expander(f"JSON tool call detected: {tool_name}"):
-                                st.code(json.dumps(payload, indent=2))
-                            try:
-                                with st.spinner(f"Executing tool: {tool_name}…"):
-                                    if tool_name == "register_strategy":
-                                        result = tools[0].invoke(payload_args)
-                                        st.success(str(result))
-                                        st.session_state.chat.append({"role": "assistant", "content": f"Tool result: {result}"})
-                                        executed_any_tool = True
-                                    elif tool_name == "backtest_strategy":
-                                        result = tools[1].invoke(payload_args)
-                                        st.info("Backtest complete")
-                                        st.session_state.chat.append({"role": "assistant", "content": "Backtest complete"})
-                                        executed_any_tool = True
-                                    else:
-                                        st.warning(f"Unknown tool: {tool_name}")
-                            except Exception as e:
-                                st.error(f"Tool '{tool_name}' failed: {e}")
+                    # If there were no tool calls but the model produced JSON that looks like a tool
+                    if (not tc_order) and text.strip().startswith("{"):
+                        try:
+                            blob = json.loads(text)
+                            tname = blob.get("tool")
+                            targs = _coerce_args(blob)
+                            if tname == "register_strategy":
+                                st.info("Executing inferred tool: register_strategy")
+                                st.success(str(register_strategy.invoke({k: v for k, v in targs.items() if k in {"class_name","code","strategy_name"}})))
+                            elif tname == "backtest_strategy":
+                                st.info("Executing inferred tool: backtest_strategy")
+                                keys = {"code","symbols","years","start_date","end_date","initial_capital","commission","slippage","rebalance","benchmark"}
+                                st.info("✅ Backtest completed")
+                                backtest_strategy.invoke({k: v for k, v in targs.items() if k in keys})
+                        except Exception:
+                            pass
 
         # Persist/restore chat history
         c1, c2 = st.columns(2)
@@ -959,8 +1374,11 @@ def main():
                     benchmark=benchmark,
                 )
                 # initial holdings: equal capital at first price available
+                fetch_syms = symbols[:] if isinstance(symbols, list) else list(symbols)
+                if benchmark and benchmark not in fetch_syms:
+                    fetch_syms.append(benchmark)
                 price_history = data.fetch_price_history(
-                    symbols,
+                    fetch_syms,
                     bt_cfg.start_date.strftime("%Y-%m-%d"),
                     bt_cfg.end_date.strftime("%Y-%m-%d"),
                 )
@@ -969,6 +1387,8 @@ def main():
                     for s in symbols
                     if s in price_history and not price_history[s].empty
                 ]
+                if benchmark and benchmark not in price_history:
+                    st.warning(f"No price data for benchmark {benchmark}; benchmark line will be hidden.")
                 if len(valid_syms) < 2:
                     st.error("Not enough symbols with data.")
                 else:

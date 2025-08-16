@@ -26,35 +26,9 @@ async fn main() -> eframe::Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(start)]
-pub async fn start() -> Result<(), JsValue> {
-    let web_options = eframe::WebOptions::default();
-
-    // Get the canvas element by id
-    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-    let document = window.document().ok_or_else(|| JsValue::from_str("no document"))?;
-    let el = document
-        .get_element_by_id("the_canvas_id")
-        .ok_or_else(|| JsValue::from_str("canvas with id 'the_canvas_id' not found"))?;
-    let canvas: web_sys::HtmlCanvasElement = el
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .map_err(|_| JsValue::from_str("element is not a canvas"))?;
-
-    eframe::WebRunner::new()
-        .start(
-            canvas,
-            web_options,
-            Box::new(|cc| Ok(Box::new(TemplateApp::new(cc)))),
-        )
-        .await
-        .map_err(|e| JsValue::from_str(&format!("eframe web start error: {:?}", e)))
-}
+compile_error!("WASM builds disabled for main fractal crate. Use refactor_ui crate instead.");
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
-    wasm_bindgen_futures::spawn_local(async {
-        let _ = start().await;
-    });
+    // WASM build disabled - use refactor_ui crate for web frontend
 }

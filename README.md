@@ -1,4 +1,11 @@
-# eframe template
+# Fractal Project
+
+This repository contains:
+- portfolio_lib: Python library for strategies, backtesting, and data services
+- backend_server: FastAPI server using portfolio_lib
+- src/: Legacy Rust egui frontend
+
+New: a Python Dear PyGui frontend for simpler local use.
 
 [![dependency status](https://deps.rs/repo/github/emilk/eframe_template/status.svg)](https://deps.rs/repo/github/emilk/eframe_template)
 [![Build Status](https://github.com/emilk/eframe_template/workflows/CI/badge.svg)](https://github.com/emilk/eframe_template/actions?workflow=CI)
@@ -27,6 +34,23 @@ Change the name of the crate: Choose a good name for your project, and change th
 
 Alternatively, you can run `fill_template.sh` which will ask for the needed names and email and perform the above patches for you. This is particularly useful if you clone this repository outside GitHub and hence cannot make use of its
 templating function.
+
+## Python Dear PyGui Frontend
+
+Quick start:
+- Install deps: pip install -e ./portfolio_lib[all] dearpygui
+- Run: python -m portfolio_lib.ui.pygui_workbench
+
+Features:
+- Select a strategy (stock + custom) and configure backtest parameters
+- Runs backtests using YFinanceDataService and BacktestingService
+- Shows metrics and a preview of executed trades
+
+Planned:
+- Equity and allocation charts rendered via textures
+- Optional wiring to backend_server endpoints
+
+---
 
 ### Learning about egui
 
